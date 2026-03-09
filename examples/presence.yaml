@@ -1,0 +1,83 @@
+operations:
+  - id: webcam_source
+    kind: source
+    mode: always_on
+    impl: webcam.read
+    outputs:
+      - stream: video_frame
+
+  - id: microphone_source
+    kind: source
+    mode: always_on
+    impl: microphone.read
+    outputs:
+      - stream: audio_chunk
+
+  - id: face_presence
+    kind: transform
+    mode: task_per_event
+    impl: cv.face_presence
+    inputs:
+      - stream: video_frame
+    outputs:
+      - stream: face_presence
+
+  - id: motion_presence
+    kind: transform
+    mode: task_per_event
+    impl: cv.motion_presence
+    inputs:
+      - stream: video_frame
+    outputs:
+      - stream: motion_presence
+
+  - id: voice_presence
+    kind: transform
+    mode: task_per_event
+    impl: audio.voice_presence
+    inputs:
+      - stream: audio_chunk
+    outputs:
+      - stream: voice_presence
+
+  - id: presence_selector
+    kind: selector
+    mode: always_on
+    impl: selector.priority_failover
+    inputs:
+      - stream: face_presence
+      - stream: motion_presence
+      - stream: voice_presence
+    outputs:
+      - stream: presence_decision
+    config:
+      priority:
+        - face_presence
+        - motion_presence
+        - voice_presence
+
+  - id: decision_sink
+    kind: sink
+    mode: task_per_event
+    impl: output.console
+    inputs:
+      - stream: presence_decision
+
+streams:
+  - id: video_frame
+    type: video_frame
+
+  - id: audio_chunk
+    type: audio_chunk
+
+  - id: face_presence
+    type: bool
+
+  - id: motion_presence
+    type: bool
+
+  - id: voice_presence
+    type: bool
+
+  - id: presence_decision
+    type: bool

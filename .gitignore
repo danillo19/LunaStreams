@@ -1,0 +1,37 @@
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Local Go caches used in this project
+.gomodcache/
+.gopath/
+
+# Go build outputs
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.a
+*.out
+*.test
+
+# Coverage and profiling
+coverage.out
+cover.out
+*.coverprofile
+*.pprof
+
+# Logs and temp files
+*.log
+tmp/
+temp/
+
+# Environment overrides
+.env
+.env.*
+!.env.example

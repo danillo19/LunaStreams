@@ -1,0 +1,55 @@
+operations:
+  - id: microphone_source
+    kind: source
+    mode: always_on
+    impl: microphone.capture
+    outputs:
+      - stream: audio_chunk
+    config:
+      sample_rate: 16000
+      channels: 1
+      frames_per_chunk: 1024
+      # Optional: bind to a specific microphone by substring match.
+      # device_name_contains: "MacBook"
+
+  - id: volume_presence
+    kind: transform
+    mode: task_per_event
+    impl: audio.volume_presence
+    inputs:
+      - stream: audio_chunk
+    outputs:
+      - stream: presence_decision
+    config:
+      threshold: 0.08
+
+  - id: presence_sink
+    kind: sink
+    mode: task_per_event
+    impl: output.console
+    inputs:
+      - stream: presence_decision
+
+  - id: keyboard_source
+    kind: source
+    mode: always_on
+    impl: keyboard.read
+    outputs:
+      - stream: pressed_key
+
+  - id: keyboard_sink
+    kind: sink
+    mode: task_per_event
+    impl: output.console
+    inputs:
+      - stream: pressed_key
+
+streams:
+  - id: audio_chunk
+    type: audio_chunk
+
+  - id: presence_decision
+    type: bool
+
+  - id: pressed_key
+    type: text
