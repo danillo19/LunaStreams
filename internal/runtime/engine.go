@@ -158,12 +158,7 @@ func (e *Engine) runAlwaysOnSelector(ctx context.Context, op ir.Operation) {
 					continue
 				}
 
-				boolValue, ok := value.(bool)
-				if !ok {
-					inputs[input.Stream] = false
-					continue
-				}
-				inputs[input.Stream] = boolValue
+				inputs[input.Stream] = value
 			}
 
 			e.logger.Debug(op.ID, "selector tick inputs=%s", describeInputs(inputs))

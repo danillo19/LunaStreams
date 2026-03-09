@@ -9,8 +9,6 @@ operations:
       sample_rate: 16000
       channels: 1
       frames_per_chunk: 1024
-      # Optional: bind to a specific microphone by substring match.
-      # device_name_contains: "MacBook"
 
   - id: volume_presence
     kind: transform
@@ -19,9 +17,24 @@ operations:
     inputs:
       - stream: audio_chunk
     outputs:
-      - stream: presence_decision
+      - stream: audio_presence
     config:
       threshold: 0.08
+
+  - id: presence_selector
+    kind: selector
+    mode: always_on
+    impl: selector.audio_or_recent_key
+    inputs:
+      - stream: audio_presence
+      - stream: pressed_key
+    outputs:
+      - stream: presence_decision
+    config:
+      audio_stream: audio_presence
+      key_stream: pressed_key
+      keyboard_window_ms: 1500
+      tick_ms: 100
 
   - id: presence_sink
     kind: sink
@@ -47,6 +60,9 @@ operations:
 streams:
   - id: audio_chunk
     type: audio_chunk
+
+  - id: audio_presence
+    type: bool
 
   - id: presence_decision
     type: bool

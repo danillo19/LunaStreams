@@ -24,6 +24,7 @@ import (
 type KeyEvent struct {
 	Seq int
 	Key string
+	At  time.Time
 }
 
 func (e KeyEvent) String() string {
@@ -203,6 +204,13 @@ type volumePresence struct {
 	threshold float64
 }
 
+type audioOrRecentKeySelector struct {
+	output      string
+	audioStream string
+	keyStream   string
+	keyWindow   time.Duration
+}
+
 func newVolumePresence(spec ir.Operation) (rt.Operator, error) {
 	input, err := singleInput(spec)
 	if err != nil {
@@ -228,6 +236,44 @@ func (o *volumePresence) Run(_ context.Context, inputs map[string]any) (map[stri
 
 	return map[string]any{
 		o.output: chunk.RMS >= o.threshold,
+	}, nil
+}
+
+func newAudioOrRecentKeySelector(spec ir.Operation) (rt.Operator, error) {
+	output, err := singleOutput(spec)
+	if err != nil {
+		return nil, err
+	}
+
+	audioStream := stringConfig(spec.Config, "audio_stream", "")
+	keyStream := stringConfig(spec.Config, "key_stream", "")
+	if audioStream == "" || keyStream == "" {
+		return nil, fmt.Errorf("selector %q requires config.audio_stream and config.key_stream", spec.ID)
+	}
+
+	windowMS := intConfig(spec.Config, "keyboard_window_ms", 1500)
+	if windowMS <= 0 {
+		windowMS = 1500
+	}
+
+	return &audioOrRecentKeySelector{
+		output:      output,
+		audioStream: audioStream,
+		keyStream:   keyStream,
+		keyWindow:   time.Duration(windowMS) * time.Millisecond,
+	}, nil
+}
+
+func (o *audioOrRecentKeySelector) Run(_ context.Context, inputs map[string]any) (map[string]any, error) {
+	audioPresence, _ := inputs[o.audioStream].(bool)
+
+	keyPresence := false
+	if event, ok := inputs[o.keyStream].(KeyEvent); ok && !event.At.IsZero() {
+		keyPresence = time.Since(event.At) <= o.keyWindow
+	}
+
+	return map[string]any{
+		o.output: audioPresence || keyPresence,
 	}, nil
 }
 
@@ -285,6 +331,7 @@ func (s *keyboardSource) readLoop() {
 		event := KeyEvent{
 			Seq: seq,
 			Key: string(r),
+			At:  time.Now(),
 		}
 
 		select {

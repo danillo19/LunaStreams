@@ -1,0 +1,27 @@
+flowchart TB
+    IR["IR YAML"]
+    Validate["Validate"]
+    Graph["Build graph"]
+    Registry["Registry"]
+    Engine["Engine"]
+
+    Store["StreamStore"]
+    Bus["EventBus"]
+    Dispatcher["Dispatcher"]
+    Ops["Operators"]
+
+    IR --> Validate --> Graph --> Engine
+    Registry --> Engine
+    Engine --> Store
+    Engine --> Bus
+    Engine --> Dispatcher
+    Engine --> Ops
+    Bus --> Dispatcher
+    Ops --> Store
+    Store --> Bus
+
+    classDef build fill:#eef6ff,stroke:#4a90e2,stroke-width:1px,color:#0b2540;
+    classDef runtime fill:#eefaf0,stroke:#2f855a,stroke-width:1px,color:#102a1f;
+
+    class IR,Validate,Graph,Registry,Engine build;
+    class Store,Bus,Dispatcher,Ops runtime;

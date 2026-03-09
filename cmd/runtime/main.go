@@ -15,7 +15,7 @@ import (
 
 func main() {
 	irPath := flag.String("ir", "./examples/presence.yaml", "path to IR yaml")
-	debug := flag.Bool("debug", true, "enable debug logs")
+	debug := flag.Bool("debug", false, "enable debug logs")
 	flag.Parse()
 
 	logger := rt.NewBeautifulLogger(*debug)

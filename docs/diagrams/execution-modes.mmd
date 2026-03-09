@@ -1,0 +1,18 @@
+flowchart LR
+    Source["always_on source"]
+    Selector["always_on selector"]
+    Event["stream event"]
+    Task["task_per_event op"]
+    Sem["per-op semaphore"]
+
+    Source -->|"loop Run()"| Event
+    Selector -->|"ticker Run()"| Event
+    Event --> Task
+    Task --> Sem
+    Sem -->|"max_in_flight = 1"| Task
+
+    classDef mode fill:#fff8e8,stroke:#b7791f,stroke-width:1px,color:#3b2a12;
+    classDef event fill:#f6f0ff,stroke:#6b46c1,stroke-width:1px,color:#24124d;
+
+    class Source,Selector,Task,Sem mode;
+    class Event event;

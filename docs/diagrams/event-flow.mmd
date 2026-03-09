@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant S as Source/Op
+    participant Store as StreamStore
+    participant Bus as EventBus
+    participant D as Dispatcher
+    participant C as Consumer Op
+
+    S->>Store: Set(stream, value)
+    Store-->>S: seq
+    S->>Bus: Publish(stream, seq)
+    Bus->>D: Event(stream, seq)
+    D->>C: Run()
+    C->>Store: Get(inputs)
+    C->>Store: Set(outputs)
+    C->>Bus: Publish(output events)

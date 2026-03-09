@@ -1,0 +1,22 @@
+flowchart LR
+    Mic["microphone_source"]
+    AudioChunk["audio_chunk"]
+    Volume["volume_presence"]
+    AudioPresence["audio_presence"]
+    Keyboard["keyboard_source"]
+    PressedKey["pressed_key"]
+    Selector["presence_selector"]
+    PresenceDecision["presence_decision"]
+    PresenceSink["presence_sink"]
+    KeyboardSink["keyboard_sink"]
+
+    Mic --> AudioChunk --> Volume --> AudioPresence --> Selector
+    Keyboard --> PressedKey --> Selector
+    PressedKey --> KeyboardSink
+    Selector --> PresenceDecision --> PresenceSink
+
+    classDef op fill:#fff8e8,stroke:#b7791f,stroke-width:1px,color:#3b2a12;
+    classDef stream fill:#f6f0ff,stroke:#6b46c1,stroke-width:1px,color:#24124d;
+
+    class Mic,Volume,Keyboard,Selector,PresenceSink,KeyboardSink op;
+    class AudioChunk,AudioPresence,PressedKey,PresenceDecision stream;
