@@ -33,6 +33,7 @@ func RegisterAll(registry *rt.Registry) error {
 		{impl: "audio.volume_presence", factory: newVolumePresence},
 		{impl: "keyboard.read", factory: newKeyboardSource},
 		{impl: "selector.audio_or_recent_key", factory: newAudioOrRecentKeySelector},
+		{impl: "selector.redundant_choice", factory: newRedundantChoiceSelector},
 		{impl: "selector.priority_failover", factory: newPrioritySelector},
 		{impl: "output.console", factory: newConsoleSink},
 	}

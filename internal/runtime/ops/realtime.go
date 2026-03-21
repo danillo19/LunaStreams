@@ -211,6 +211,32 @@ type audioOrRecentKeySelector struct {
 	keyWindow   time.Duration
 }
 
+type redundantChoiceSelector struct {
+	decisionOutput        string
+	choiceOutput          string
+	defaultChoice         string
+	selectionWeightTarget float64
+	variants              []choiceVariant
+}
+
+type choiceVariant struct {
+	label     string
+	stream    string
+	kind      string
+	keyWindow time.Duration
+	cost      float64
+	weight    float64
+	index     int
+}
+
+type selectedChoice struct {
+	labels []string
+	cost   float64
+	weight float64
+	count  int
+	order  []int
+}
+
 func newVolumePresence(spec ir.Operation) (rt.Operator, error) {
 	input, err := singleInput(spec)
 	if err != nil {
@@ -274,6 +300,51 @@ func (o *audioOrRecentKeySelector) Run(_ context.Context, inputs map[string]any)
 
 	return map[string]any{
 		o.output: audioPresence || keyPresence,
+	}, nil
+}
+
+func newRedundantChoiceSelector(spec ir.Operation) (rt.Operator, error) {
+	decisionOutput, choiceOutput, err := dualOutputs(spec)
+	if err != nil {
+		return nil, err
+	}
+
+	variants, err := parseChoiceVariants(spec)
+	if err != nil {
+		return nil, err
+	}
+	if len(variants) == 0 {
+		return nil, fmt.Errorf("selector %q requires at least one config.variants item", spec.ID)
+	}
+
+	return &redundantChoiceSelector{
+		decisionOutput:        decisionOutput,
+		choiceOutput:          choiceOutput,
+		defaultChoice:         stringConfig(spec.Config, "default_choice", "threshold_unmet"),
+		selectionWeightTarget: positiveFloatConfig(spec.Config, "selection_weight_threshold", 1.0),
+		variants:              variants,
+	}, nil
+}
+
+func (o *redundantChoiceSelector) Run(_ context.Context, inputs map[string]any) (map[string]any, error) {
+	active := make([]choiceVariant, 0, len(o.variants))
+	for _, variant := range o.variants {
+		if variant.matches(inputs) {
+			active = append(active, variant)
+		}
+	}
+
+	best, ok := chooseWeightedVariantSet(active, o.selectionWeightTarget)
+	if !ok {
+		return map[string]any{
+			o.decisionOutput: false,
+			o.choiceOutput:   o.defaultChoice,
+		}, nil
+	}
+
+	return map[string]any{
+		o.decisionOutput: true,
+		o.choiceOutput:   best.describe(),
 	}, nil
 }
 
@@ -430,6 +501,22 @@ func floatConfig(config map[string]any, key string, fallback float64) float64 {
 	}
 }
 
+func positiveFloatConfig(config map[string]any, key string, fallback float64) float64 {
+	value := floatConfig(config, key, fallback)
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func nonNegativeFloatConfig(config map[string]any, key string, fallback float64) float64 {
+	value := floatConfig(config, key, fallback)
+	if value >= 0 {
+		return value
+	}
+	return fallback
+}
+
 func stringConfig(config map[string]any, key string, fallback string) string {
 	if config == nil {
 		return fallback
@@ -446,6 +533,144 @@ func stringConfig(config map[string]any, key string, fallback string) string {
 	}
 
 	return value
+}
+
+func dualOutputs(spec ir.Operation) (string, string, error) {
+	if len(spec.Outputs) != 2 {
+		return "", "", fmt.Errorf("operation %q expects exactly two outputs", spec.ID)
+	}
+
+	return spec.Outputs[0].Stream, spec.Outputs[1].Stream, nil
+}
+
+func parseChoiceVariants(spec ir.Operation) ([]choiceVariant, error) {
+	if spec.Config == nil {
+		return nil, nil
+	}
+
+	raw, ok := spec.Config["variants"]
+	if !ok {
+		return nil, nil
+	}
+
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("selector %q expects config.variants to be a list", spec.ID)
+	}
+
+	variants := make([]choiceVariant, 0, len(items))
+	for index, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("selector %q variant[%d] must be an object", spec.ID, index)
+		}
+
+		stream := stringConfig(entry, "stream", "")
+		if stream == "" {
+			return nil, fmt.Errorf("selector %q variant[%d] requires stream", spec.ID, index)
+		}
+
+		variant := choiceVariant{
+			label:  stringConfig(entry, "label", stream),
+			stream: stream,
+			kind:   stringConfig(entry, "kind", "bool"),
+			cost:   nonNegativeFloatConfig(entry, "cost", 1.0),
+			weight: positiveFloatConfig(entry, "weight", 1.0),
+			index:  index,
+		}
+
+		switch variant.kind {
+		case "bool":
+		case "recent_key":
+			windowMS := intConfig(entry, "window_ms", 1500)
+			if windowMS <= 0 {
+				windowMS = 1500
+			}
+			variant.keyWindow = time.Duration(windowMS) * time.Millisecond
+		default:
+			return nil, fmt.Errorf("selector %q variant[%d] uses unsupported kind %q", spec.ID, index, variant.kind)
+		}
+
+		variants = append(variants, variant)
+	}
+
+	return variants, nil
+}
+
+func (v choiceVariant) matches(inputs map[string]any) bool {
+	switch v.kind {
+	case "bool":
+		value, _ := inputs[v.stream].(bool)
+		return value
+	case "recent_key":
+		event, ok := inputs[v.stream].(KeyEvent)
+		return ok && !event.At.IsZero() && time.Since(event.At) <= v.keyWindow
+	default:
+		return false
+	}
+}
+
+func chooseWeightedVariantSet(active []choiceVariant, threshold float64) (selectedChoice, bool) {
+	if len(active) == 0 {
+		return selectedChoice{}, false
+	}
+
+	if threshold <= 0 {
+		threshold = 1.0
+	}
+
+	var best selectedChoice
+	bestFound := false
+	limit := 1 << len(active)
+	for mask := 1; mask < limit; mask++ {
+		candidate := selectedChoice{}
+		for index, variant := range active {
+			if mask&(1<<index) == 0 {
+				continue
+			}
+
+			candidate.labels = append(candidate.labels, variant.label)
+			candidate.cost += variant.cost
+			candidate.weight += variant.weight
+			candidate.count++
+			candidate.order = append(candidate.order, variant.index)
+		}
+
+		if candidate.weight < threshold {
+			continue
+		}
+
+		if !bestFound || candidate.betterThan(best) {
+			best = candidate
+			bestFound = true
+		}
+	}
+
+	return best, bestFound
+}
+
+func (c selectedChoice) betterThan(other selectedChoice) bool {
+	if c.cost != other.cost {
+		return c.cost < other.cost
+	}
+	if c.weight != other.weight {
+		return c.weight > other.weight
+	}
+	if c.count != other.count {
+		return c.count < other.count
+	}
+
+	for index := 0; index < len(c.order) && index < len(other.order); index++ {
+		if c.order[index] != other.order[index] {
+			return c.order[index] < other.order[index]
+		}
+	}
+
+	return len(c.order) < len(other.order)
+}
+
+func (c selectedChoice) describe() string {
+	return fmt.Sprintf("%s | cost=%.2f weight=%.2f", strings.Join(c.labels, "+"), c.cost, c.weight)
 }
 
 func preferredBackends() []malgo.Backend {

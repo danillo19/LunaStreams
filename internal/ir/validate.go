@@ -48,6 +48,12 @@ func Validate(doc *Document, registry ImplRegistry) error {
 		} else if registry != nil && !registry.Has(op.Impl) {
 			problems = append(problems, fmt.Sprintf("operation %q uses unregistered impl %q", op.ID, op.Impl))
 		}
+		if op.Domain.Cost != nil && *op.Domain.Cost < 0 {
+			problems = append(problems, fmt.Sprintf("operation %q has negative domain.cost", op.ID))
+		}
+		if op.Domain.Weight != nil && *op.Domain.Weight < 0 {
+			problems = append(problems, fmt.Sprintf("operation %q has negative domain.weight", op.ID))
+		}
 
 		if op.Kind == OperationKindSource && len(op.Inputs) > 0 {
 			problems = append(problems, fmt.Sprintf("source operation %q must not have inputs", op.ID))

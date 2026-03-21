@@ -1,0 +1,116 @@
+operations:
+  - id: microphone_source
+    kind: source
+    mode: always_on
+    impl: microphone.capture
+    outputs:
+      - stream: audio_chunk
+    config:
+      sample_rate: 16000
+      channels: 1
+      frames_per_chunk: 1024
+
+  - id: loud_audio_presence
+    kind: transform
+    mode: task_per_event
+    impl: audio.volume_presence
+    domain:
+      cost: 7
+      weight: 0.95
+    inputs:
+      - stream: audio_chunk
+    outputs:
+      - stream: loud_audio_presence
+    config:
+      threshold: 0.12
+
+  - id: soft_audio_presence
+    kind: transform
+    mode: task_per_event
+    impl: audio.volume_presence
+    domain:
+      cost: 1
+      weight: 0.45
+    inputs:
+      - stream: audio_chunk
+    outputs:
+      - stream: soft_audio_presence
+    config:
+      threshold: 0.04
+
+  - id: keyboard_source
+    kind: source
+    mode: always_on
+    impl: keyboard.read
+    domain:
+      cost: 2
+      weight: 0.40
+    outputs:
+      - stream: pressed_key
+
+  - id: presence_choice_selector
+    kind: selector
+    mode: always_on
+    impl: selector.redundant_choice
+    inputs:
+      - stream: loud_audio_presence
+      - stream: soft_audio_presence
+      - stream: pressed_key
+    outputs:
+      - stream: presence_decision
+      - stream: presence_strategy
+    config:
+      default_choice: threshold_unmet
+      selection_weight_threshold: 0.80
+      tick_ms: 100
+      variants:
+        - stream: loud_audio_presence
+          kind: bool
+          label: loud_audio
+        - stream: soft_audio_presence
+          kind: bool
+          label: soft_audio
+        - stream: pressed_key
+          kind: recent_key
+          label: recent_keyboard
+          window_ms: 1500
+
+  - id: presence_sink
+    kind: sink
+    mode: task_per_event
+    impl: output.console
+    inputs:
+      - stream: presence_decision
+
+  - id: strategy_sink
+    kind: sink
+    mode: task_per_event
+    impl: output.console
+    inputs:
+      - stream: presence_strategy
+
+  - id: keyboard_sink
+    kind: sink
+    mode: task_per_event
+    impl: output.console
+    inputs:
+      - stream: pressed_key
+
+streams:
+  - id: audio_chunk
+    type: audio_chunk
+
+  - id: loud_audio_presence
+    type: bool
+
+  - id: soft_audio_presence
+    type: bool
+
+  - id: pressed_key
+    type: text
+
+  - id: presence_decision
+    type: bool
+
+  - id: presence_strategy
+    type: text

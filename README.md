@@ -6,9 +6,10 @@ IR описывает:
 - `operations[]`: узлы вычисления
 - `streams[]`: именованные потоки данных между узлами
 
-Проект уже поддерживает два основных сценария:
+Проект уже поддерживает три основных сценария:
 - `examples/presence.yaml`: полностью mock pipeline для presence detection
 - `examples/presence_v2.yaml`: pipeline с реальным микрофоном и клавиатурой
+- `examples/presence_redundant_v2.yaml`: real pipeline с избыточными вариантами описания presence и явным выбором активного варианта
 
 Подробная архитектура компонентов вынесена в `docs/runtime-components.md`.
 
@@ -69,6 +70,9 @@ streams:
 - `inputs[]`: входные streams
 - `outputs[]`: выходные streams
 - `config`: свободная конфигурация реализации
+- `domain`: необязательные доменные метаданные операции
+  - `cost`: условная стоимость использования операции
+  - `weight`: вклад операции в итоговую надёжность/полезность решения
 
 ### Поля stream
 
@@ -89,6 +93,7 @@ streams:
 - что `sink` не имеет `outputs`
 - что у каждого stream ровно один producer
 - что каждый `impl` зарегистрирован в `Registry`
+- что `domain.cost` и `domain.weight`, если заданы, неотрицательны
 
 Если хотя бы одно правило нарушено, запуск прекращается на этапе `validate`.
 
@@ -158,6 +163,7 @@ streams:
 Примеры:
 - `selector.priority_failover`
 - `selector.audio_or_recent_key`
+- `selector.redundant_choice`
 
 ### `sink`
 
@@ -260,6 +266,51 @@ streams:
 - `keyboard_window_ms`
 - `tick_ms`
 
+### `selector.redundant_choice`
+
+Selector, который читает несколько альтернативных описаний одного доменного факта и выбирает самый дешёвый активный набор вариантов, который достигает заданного порога суммарного веса.
+
+Поддерживаемые настройки:
+- `default_choice`
+- `selection_weight_threshold`
+- `variants[]`
+- `tick_ms`
+
+Каждый элемент `variants[]` может описывать:
+- `kind: bool` для обычного булевого stream
+- `kind: recent_key` для проверки свежести последнего `KeyEvent`
+- `cost` и `weight`, если нужно переопределить доменные значения producer-операции
+
+Если `cost` и `weight` не заданы внутри `variants[]`, runtime пытается взять их из `operation.domain` producer-операции соответствующего stream.
+
+Если selector находит подходящий набор, он публикует:
+- `presence_decision = true`
+- текстовую стратегию вида `<labels> | cost=<sum> weight=<sum>`
+
+Если активных вариантов недостаточно для достижения порога веса, selector публикует:
+- `presence_decision = false`
+- `default_choice`
+
+## Пример 3: redundant presence_v2
+
+`examples/presence_redundant_v2.yaml` показывает избыточность описания доменного факта `presence` с доменными `cost/weight`.
+
+### Логика графа
+
+- `microphone_source` через `microphone.capture` пишет в `audio_chunk`
+- два `audio.volume_presence` строят два альтернативных описания presence: `loud_audio_presence` и `soft_audio_presence`
+- `keyboard_source` через `keyboard.read` пишет в `pressed_key`
+- у `loud_audio_presence`, `soft_audio_presence` и `keyboard_source` заданы `domain.cost` и `domain.weight`
+- `presence_choice_selector` через `selector.redundant_choice` выбирает самый дешёвый набор вариантов, который добирает `selection_weight_threshold`, и публикует:
+- `presence_decision`
+- `presence_strategy`
+
+### Что демонстрирует пример
+
+- один и тот же доменный факт `presence` описан несколькими избыточными способами
+- selector умеет не только агрегировать их в `bool`, но и подбирать комбинацию по критерию `минимальная стоимость при достаточном весе`
+- дорогой, но надёжный сигнал может проиграть более дешёвой комбинации нескольких сигналов, если та проходит порог
+
 ## Логирование
 
 Runtime использует `BeautifulLogger` с уровнями:
@@ -296,6 +347,12 @@ go run ./cmd/runtime -ir ./examples/presence.yaml
 go run ./cmd/runtime -ir ./examples/presence_v2.yaml -debug
 ```
 
+### Redundant real presence_v2
+
+```bash
+go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -debug
+```
+
 Если нужно зафиксировать конкретный микрофон:
 
 ```yaml
@@ -324,4 +381,5 @@ config:
 
 - общее устройство компонентов: `docs/runtime-components.md`
 - пример реального графа: `examples/presence_v2.yaml`
+- пример выбора между избыточными вариантами: `examples/presence_redundant_v2.yaml`
 - entrypoint runtime: `cmd/runtime/main.go`

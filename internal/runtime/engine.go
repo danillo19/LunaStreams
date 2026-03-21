@@ -46,7 +46,8 @@ func NewEngine(doc *ir.Document, g *graph.Graph, registry *Registry, logger *Bea
 	}
 
 	for _, op := range doc.Operations {
-		operator, err := registry.Create(op)
+		resolvedOp := resolveOperationSpec(op, g)
+		operator, err := registry.Create(resolvedOp)
 		if err != nil {
 			return nil, err
 		}
@@ -56,6 +57,71 @@ func NewEngine(doc *ir.Document, g *graph.Graph, registry *Registry, logger *Bea
 	}
 
 	return engine, nil
+}
+
+func resolveOperationSpec(op ir.Operation, g *graph.Graph) ir.Operation {
+	if g == nil || op.Impl != "selector.redundant_choice" {
+		return op
+	}
+
+	config, ok := cloneMap(op.Config)
+	if !ok {
+		return op
+	}
+
+	rawVariants, ok := config["variants"]
+	if !ok {
+		op.Config = config
+		return op
+	}
+
+	items, ok := rawVariants.([]any)
+	if !ok {
+		op.Config = config
+		return op
+	}
+
+	clonedItems := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := cloneMap(item)
+		if !ok {
+			clonedItems = append(clonedItems, item)
+			continue
+		}
+
+		streamID, _ := entry["stream"].(string)
+		if streamID != "" {
+			if producerID, exists := g.ProducerByStream[streamID]; exists {
+				if producer, exists := g.Operations[producerID]; exists {
+					if _, hasCost := entry["cost"]; !hasCost && producer.Domain.Cost != nil {
+						entry["cost"] = *producer.Domain.Cost
+					}
+					if _, hasWeight := entry["weight"]; !hasWeight && producer.Domain.Weight != nil {
+						entry["weight"] = *producer.Domain.Weight
+					}
+				}
+			}
+		}
+
+		clonedItems = append(clonedItems, entry)
+	}
+
+	config["variants"] = clonedItems
+	op.Config = config
+	return op
+}
+
+func cloneMap(value any) (map[string]any, bool) {
+	source, ok := value.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+
+	cloned := make(map[string]any, len(source))
+	for key, item := range source {
+		cloned[key] = item
+	}
+	return cloned, true
 }
 
 func (e *Engine) Start(ctx context.Context) error {

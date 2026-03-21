@@ -31,13 +31,19 @@ type Document struct {
 }
 
 type Operation struct {
-	ID      string         `yaml:"id"`
-	Kind    OperationKind  `yaml:"kind"`
-	Mode    OperationMode  `yaml:"mode"`
-	Impl    string         `yaml:"impl"`
-	Inputs  []StreamRef    `yaml:"inputs"`
-	Outputs []StreamRef    `yaml:"outputs"`
-	Config  map[string]any `yaml:"config"`
+	ID      string          `yaml:"id"`
+	Kind    OperationKind   `yaml:"kind"`
+	Mode    OperationMode   `yaml:"mode"`
+	Impl    string          `yaml:"impl"`
+	Inputs  []StreamRef     `yaml:"inputs"`
+	Outputs []StreamRef     `yaml:"outputs"`
+	Config  map[string]any  `yaml:"config"`
+	Domain  OperationDomain `yaml:"domain"`
+}
+
+type OperationDomain struct {
+	Cost   *float64 `yaml:"cost"`
+	Weight *float64 `yaml:"weight"`
 }
 
 type StreamRef struct {
