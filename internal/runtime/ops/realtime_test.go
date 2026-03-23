@@ -8,7 +8,7 @@ import (
 	"LunaStreams/internal/ir"
 )
 
-func TestRedundantChoiceSelectorChoosesCheapestSetMeetingWeightThreshold(t *testing.T) {
+func TestRedundantChoiceSelectorRuntimeBundleChoosesCheapestSetMeetingWeightThreshold(t *testing.T) {
 	operator, err := newRedundantChoiceSelector(ir.Operation{
 		ID: "presence_choice_selector",
 		Outputs: []ir.StreamRef{
@@ -16,6 +16,7 @@ func TestRedundantChoiceSelectorChoosesCheapestSetMeetingWeightThreshold(t *test
 			{Stream: "presence_strategy"},
 		},
 		Config: map[string]any{
+			"selection_mode":             "runtime_bundle",
 			"default_choice":             "threshold_unmet",
 			"selection_weight_threshold": 0.8,
 			"variants": []any{
@@ -62,7 +63,7 @@ func TestRedundantChoiceSelectorChoosesCheapestSetMeetingWeightThreshold(t *test
 	}
 }
 
-func TestRedundantChoiceSelectorReturnsDefaultWhenThresholdNotMet(t *testing.T) {
+func TestRedundantChoiceSelectorRuntimeBundleReturnsDefaultWhenThresholdNotMet(t *testing.T) {
 	operator, err := newRedundantChoiceSelector(ir.Operation{
 		ID: "presence_choice_selector",
 		Outputs: []ir.StreamRef{
@@ -70,6 +71,7 @@ func TestRedundantChoiceSelectorReturnsDefaultWhenThresholdNotMet(t *testing.T) 
 			{Stream: "presence_strategy"},
 		},
 		Config: map[string]any{
+			"selection_mode":             "runtime_bundle",
 			"default_choice":             "threshold_unmet",
 			"selection_weight_threshold": 0.8,
 			"variants": []any{
@@ -100,7 +102,7 @@ func TestRedundantChoiceSelectorReturnsDefaultWhenThresholdNotMet(t *testing.T) 
 	}
 }
 
-func TestRedundantChoiceSelectorUsesRecentKeyWindow(t *testing.T) {
+func TestRedundantChoiceSelectorSelectedAnyUsesPlannedStrategy(t *testing.T) {
 	operator, err := newRedundantChoiceSelector(ir.Operation{
 		ID: "presence_choice_selector",
 		Outputs: []ir.StreamRef{
@@ -108,16 +110,20 @@ func TestRedundantChoiceSelectorUsesRecentKeyWindow(t *testing.T) {
 			{Stream: "presence_strategy"},
 		},
 		Config: map[string]any{
-			"default_choice":             "threshold_unmet",
-			"selection_weight_threshold": 0.4,
+			"selection_mode":   "selected_any",
+			"default_choice":   "plan_inactive",
+			"planned_strategy": "soft_audio+recent_keyboard | cost=3.00 weight=0.85",
 			"variants": []any{
+				map[string]any{
+					"stream": "soft_audio_presence",
+					"kind":   "bool",
+					"label":  "soft_audio",
+				},
 				map[string]any{
 					"stream":    "pressed_key",
 					"kind":      "recent_key",
 					"label":     "recent_keyboard",
 					"window_ms": 250,
-					"cost":      2.0,
-					"weight":    0.40,
 				},
 			},
 		},
@@ -127,28 +133,28 @@ func TestRedundantChoiceSelectorUsesRecentKeyWindow(t *testing.T) {
 	}
 
 	freshOutputs, err := operator.Run(context.Background(), map[string]any{
-		"pressed_key": KeyEvent{Key: "a", At: time.Now().Add(-100 * time.Millisecond)},
+		"soft_audio_presence": true,
 	})
 	if err != nil {
-		t.Fatalf("Run() with fresh key error = %v", err)
+		t.Fatalf("Run() with selected signal error = %v", err)
 	}
 	if got := freshOutputs["presence_decision"]; got != true {
-		t.Fatalf("fresh presence_decision = %v, want true", got)
+		t.Fatalf("selected presence_decision = %v, want true", got)
 	}
-	if got := freshOutputs["presence_strategy"]; got != "recent_keyboard | cost=2.00 weight=0.40" {
-		t.Fatalf("fresh presence_strategy = %v, want recent_keyboard strategy", got)
+	if got := freshOutputs["presence_strategy"]; got != "soft_audio+recent_keyboard | cost=3.00 weight=0.85" {
+		t.Fatalf("selected presence_strategy = %v, want planned strategy", got)
 	}
 
 	staleOutputs, err := operator.Run(context.Background(), map[string]any{
 		"pressed_key": KeyEvent{Key: "a", At: time.Now().Add(-500 * time.Millisecond)},
 	})
 	if err != nil {
-		t.Fatalf("Run() with stale key error = %v", err)
+		t.Fatalf("Run() with inactive selected plan error = %v", err)
 	}
 	if got := staleOutputs["presence_decision"]; got != false {
-		t.Fatalf("stale presence_decision = %v, want false", got)
+		t.Fatalf("inactive presence_decision = %v, want false", got)
 	}
-	if got := staleOutputs["presence_strategy"]; got != "threshold_unmet" {
-		t.Fatalf("stale presence_strategy = %v, want threshold_unmet", got)
+	if got := staleOutputs["presence_strategy"]; got != "plan_inactive" {
+		t.Fatalf("inactive presence_strategy = %v, want plan_inactive", got)
 	}
 }

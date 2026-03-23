@@ -9,6 +9,7 @@ import (
 
 	"LunaStreams/internal/graph"
 	"LunaStreams/internal/ir"
+	"LunaStreams/internal/planner"
 	rt "LunaStreams/internal/runtime"
 	"LunaStreams/internal/runtime/ops"
 )
@@ -33,6 +34,22 @@ func main() {
 
 	if err := ir.Validate(doc, registry); err != nil {
 		log.Fatalf("validate ir: %v", err)
+	}
+
+	planResult, err := planner.CompileRedundantChoices(doc)
+	if err != nil || planResult == nil {
+		log.Fatalf("compile redundant choices: %v", err)
+	}
+
+	if planResult.Document != nil {
+		doc = planResult.Document
+	}
+	for _, decision := range planResult.Decisions {
+		logger.Info("planner", "selector %s planned strategy=%s disabled_ops=%v", decision.SelectorID, decision.Strategy, decision.DisabledOperationIDs)
+	}
+
+	if err := ir.Validate(doc, registry); err != nil {
+		log.Fatalf("validate planned ir: %v", err)
 	}
 
 	dependencyGraph, err := graph.Build(doc)

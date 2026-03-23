@@ -212,9 +212,11 @@ type audioOrRecentKeySelector struct {
 }
 
 type redundantChoiceSelector struct {
+	mode                  string
 	decisionOutput        string
 	choiceOutput          string
 	defaultChoice         string
+	plannedStrategy       string
 	selectionWeightTarget float64
 	variants              []choiceVariant
 }
@@ -318,15 +320,48 @@ func newRedundantChoiceSelector(spec ir.Operation) (rt.Operator, error) {
 	}
 
 	return &redundantChoiceSelector{
+		mode:                  stringConfig(spec.Config, "selection_mode", "runtime_bundle"),
 		decisionOutput:        decisionOutput,
 		choiceOutput:          choiceOutput,
 		defaultChoice:         stringConfig(spec.Config, "default_choice", "threshold_unmet"),
+		plannedStrategy:       stringConfig(spec.Config, "planned_strategy", ""),
 		selectionWeightTarget: positiveFloatConfig(spec.Config, "selection_weight_threshold", 1.0),
 		variants:              variants,
 	}, nil
 }
 
 func (o *redundantChoiceSelector) Run(_ context.Context, inputs map[string]any) (map[string]any, error) {
+	switch o.mode {
+	case "selected_any":
+		return o.runSelectedAny(inputs), nil
+	default:
+		return o.runRuntimeBundle(inputs), nil
+	}
+}
+
+func (o *redundantChoiceSelector) runSelectedAny(inputs map[string]any) map[string]any {
+	for _, variant := range o.variants {
+		if !variant.matches(inputs) {
+			continue
+		}
+
+		strategy := o.plannedStrategy
+		if strategy == "" {
+			strategy = variant.label
+		}
+		return map[string]any{
+			o.decisionOutput: true,
+			o.choiceOutput:   strategy,
+		}
+	}
+
+	return map[string]any{
+		o.decisionOutput: false,
+		o.choiceOutput:   o.defaultChoice,
+	}
+}
+
+func (o *redundantChoiceSelector) runRuntimeBundle(inputs map[string]any) map[string]any {
 	active := make([]choiceVariant, 0, len(o.variants))
 	for _, variant := range o.variants {
 		if variant.matches(inputs) {
@@ -339,13 +374,13 @@ func (o *redundantChoiceSelector) Run(_ context.Context, inputs map[string]any) 
 		return map[string]any{
 			o.decisionOutput: false,
 			o.choiceOutput:   o.defaultChoice,
-		}, nil
+		}
 	}
 
 	return map[string]any{
 		o.decisionOutput: true,
 		o.choiceOutput:   best.describe(),
-	}, nil
+	}
 }
 
 type keyboardSource struct {

@@ -28,6 +28,7 @@ Runtime исполняет граф операций, где:
 ```text
 cmd/runtime/main.go                 # entrypoint runtime
 internal/ir/                       # IR-модель, загрузка, валидация
+internal/planner/                  # compile-time выбор redundant планов
 internal/graph/                    # построение producer/consumer graph
 internal/runtime/                  # engine, store, bus, registry, logger
 internal/runtime/ops/              # mock и реальные impl операций
@@ -103,11 +104,12 @@ streams:
 1. `cmd/runtime/main.go` читает `-ir`
 2. IR загружается из YAML
 3. выполняется валидация
-4. строится dependency graph
-5. создаётся `Engine`
-6. через `Registry` создаются конкретные операторы
-7. запускаются `always_on source` и `always_on selector`
-8. dispatcher начинает слушать общий `EventBus`
+4. для redundant selectors при необходимости компилируется execution plan
+5. строится dependency graph
+6. создаётся `Engine`
+7. через `Registry` создаются конкретные операторы
+8. запускаются `always_on source` и `always_on selector`
+9. dispatcher начинает слушать общий `EventBus`
 
 ### Общая модель исполнения
 
@@ -268,10 +270,11 @@ streams:
 
 ### `selector.redundant_choice`
 
-Selector, который читает несколько альтернативных описаний одного доменного факта и выбирает самый дешёвый активный набор вариантов, который достигает заданного порога суммарного веса.
+Selector для избыточного описания одного доменного факта. Он поддерживает два режима: runtime-выбор по активным сигналам и compile-time выбор execution plan до запуска runtime.
 
 Поддерживаемые настройки:
 - `default_choice`
+- `selection_mode`
 - `selection_weight_threshold`
 - `variants[]`
 - `tick_ms`
@@ -281,13 +284,20 @@ Selector, который читает несколько альтернатив�
 - `kind: recent_key` для проверки свежести последнего `KeyEvent`
 - `cost` и `weight`, если нужно переопределить доменные значения producer-операции
 
-Если `cost` и `weight` не заданы внутри `variants[]`, runtime пытается взять их из `operation.domain` producer-операции соответствующего stream.
+Если `cost` и `weight` не заданы внутри `variants[]`, planner/runtime пытается взять их из `operation.domain` producer-операции соответствующего stream.
 
-Если selector находит подходящий набор, он публикует:
+Режимы:
+- `runtime_bundle`: selector смотрит на активные сигналы и уже в runtime выбирает самый дешёвый активный набор, который достигает порога веса
+- `compile_time_min_cost`: planner до запуска runtime выбирает самый дешёвый набор вариантов, который достигает порога веса, и вырезает остальные ветки из графа
+- `selected_any`: внутренний режим уже скомпилированного плана; selector работает только по выбранным веткам
+
+В compile-time режиме selector больше не запускает дорогие невыбранные операции вообще: planner переписывает `inputs` и `variants`, а затем удаляет неиспользуемые ветки из документа перед `Build/NewEngine`.
+
+Если выбранный или активный набор даёт решение, selector публикует:
 - `presence_decision = true`
-- текстовую стратегию вида `<labels> | cost=<sum> weight=<sum>`
+- строку стратегии вида `<labels> | cost=<sum> weight=<sum>`
 
-Если активных вариантов недостаточно для достижения порога веса, selector публикует:
+Если решение не сработало, selector публикует:
 - `presence_decision = false`
 - `default_choice`
 
@@ -301,15 +311,18 @@ Selector, который читает несколько альтернатив�
 - два `audio.volume_presence` строят два альтернативных описания presence: `loud_audio_presence` и `soft_audio_presence`
 - `keyboard_source` через `keyboard.read` пишет в `pressed_key`
 - у `loud_audio_presence`, `soft_audio_presence` и `keyboard_source` заданы `domain.cost` и `domain.weight`
-- `presence_choice_selector` через `selector.redundant_choice` выбирает самый дешёвый набор вариантов, который добирает `selection_weight_threshold`, и публикует:
+- `presence_choice_selector` через `selector.redundant_choice` работает в режиме `compile_time_min_cost`
+- planner до старта runtime выбирает самый дешёвый набор вариантов, который добирает `selection_weight_threshold`
+- в этом примере planner оставляет `soft_audio_presence + pressed_key` и вырезает ветку `loud_audio_presence`
+- после компиляции selector работает только по выбранному плану и публикует:
 - `presence_decision`
 - `presence_strategy`
 
 ### Что демонстрирует пример
 
 - один и тот же доменный факт `presence` описан несколькими избыточными способами
-- selector умеет не только агрегировать их в `bool`, но и подбирать комбинацию по критерию `минимальная стоимость при достаточном весе`
-- дорогой, но надёжный сигнал может проиграть более дешёвой комбинации нескольких сигналов, если та проходит порог
+- система умеет выбрать избыточное описание предметной области до старта runtime, а не после вычисления всех дорогих веток
+- дорогая операция может вообще не попасть в execution plan, если более дешёвый набор операций даёт достаточный суммарный вес
 
 ## Логирование
 
@@ -366,7 +379,7 @@ config:
 - читает путь к IR через `-ir`
 - создаёт logger
 - регистрирует все операции
-- выполняет `Load -> Validate -> Build -> NewEngine -> Start`
+- выполняет `Load -> Validate -> CompileRedundantChoices -> Validate -> Build -> NewEngine -> Start`
 - ждёт `Ctrl+C`
 
 ## Ограничения текущего MVP

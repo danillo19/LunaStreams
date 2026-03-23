@@ -60,7 +60,8 @@ operations:
       - stream: presence_decision
       - stream: presence_strategy
     config:
-      default_choice: threshold_unmet
+      selection_mode: compile_time_min_cost
+      default_choice: plan_inactive
       selection_weight_threshold: 0.80
       tick_ms: 100
       variants:
