@@ -2,14 +2,14 @@
 
 `LunaStreams` это MVP runtime для исполнения простого интерактивного IR на Go.
 
-IR описывает:
-- `operations[]`: узлы вычисления
-- `streams[]`: именованные потоки данных между узлами
+IR теперь разделяет:
+- `model.operations[]` и `model.streams[]`: вычислительную модель
+- `task.*`: постановку задачи на этой модели
 
 Проект уже поддерживает три основных сценария:
 - `examples/presence.yaml`: полностью mock pipeline для presence detection
 - `examples/presence_v2.yaml`: pipeline с реальным микрофоном и клавиатурой
-- `examples/presence_redundant_v2.yaml`: real pipeline с избыточными вариантами описания presence и явным выбором активного варианта
+- `examples/presence_redundant_v2.yaml`: real pipeline, где задача отдельно задаёт требования и planner сам выбирает маршрут
 
 Подробная архитектура компонентов вынесена в `docs/runtime-components.md`.
 
@@ -38,25 +38,35 @@ docs/runtime-components.md         # подробная архитектура �
 
 ## Формат IR
 
-IR задаётся YAML-документом:
+IR задаётся YAML-документом с разделением `model` и `task`:
 
 ```yaml
-operations:
-  - id: microphone_source
-    kind: source
-    mode: always_on
-    impl: microphone.capture
-    outputs:
-      - stream: audio_chunk
-    config:
-      sample_rate: 16000
+model:
+  operations:
+    - id: microphone_source
+      kind: source
+      mode: always_on
+      impl: microphone.capture
+      outputs:
+        - stream: audio_chunk
+      config:
+        sample_rate: 16000
 
-streams:
-  - id: audio_chunk
-    type: audio_chunk
+  streams:
+    - id: audio_chunk
+      type: audio_chunk
+
+task:
+  inputs:
+    - stream: audio_chunk
+
+  outputs:
+    - stream: presence_decision
 ```
 
-### Поля operation
+Для обратной совместимости loader всё ещё понимает старый плоский формат с корневыми `operations[]` и `streams[]`, но новые примеры используют явное разделение.
+
+### Поля `model.operation`
 
 - `id`: уникальный идентификатор операции
 - `kind`: тип операции
@@ -75,7 +85,9 @@ streams:
   - `cost`: условная стоимость использования операции
   - `weight`: вклад операции в итоговую надёжность/полезность решения
 
-### Поля stream
+`domain` сохранён для совместимости, но для новых постановок задачи предпочтительно использовать `task.operation_profiles`.
+
+### Поля `model.stream`
 
 - `id`: уникальный идентификатор потока
 - `type`: логический тип данных
@@ -83,6 +95,24 @@ streams:
   - `audio_chunk`
   - `bool`
   - `text`
+
+### Поля `task`
+
+- `inputs[]`: какие входные streams считаются доступными для решения задачи
+- `outputs[]`: какие выходные streams требуется получить
+- `operation_profiles[]`: нефункциональные свойства операций в рамках задачи
+  - `operation`
+  - `cost`
+  - `weight`
+  - `latency_ms`
+- `constraints`
+  - `min_total_weight`
+  - `max_total_latency_ms`
+  - `max_total_cost`
+- `objective`
+  - `primary`
+  - `secondary`
+- `task_variants[]`: альтернативные постановки задачи, которые можно выбрать через `-task`
 
 ## Валидация IR
 
@@ -270,28 +300,28 @@ streams:
 
 ### `selector.redundant_choice`
 
-Selector для избыточного описания одного доменного факта. Он поддерживает два режима: runtime-выбор по активным сигналам и compile-time выбор execution plan до запуска runtime.
+Selector для избыточного описания одного доменного факта. В новой схеме он описывает в `model` множество допустимых альтернативных сигналов, а planner до старта runtime сам выбирает execution plan на основе `task`.
 
-Поддерживаемые настройки:
+Поддерживаемые настройки в `model.operation.config`:
 - `default_choice`
-- `selection_mode`
-- `selection_weight_threshold`
 - `variants[]`
 - `tick_ms`
 
 Каждый элемент `variants[]` может описывать:
 - `kind: bool` для обычного булевого stream
 - `kind: recent_key` для проверки свежести последнего `KeyEvent`
-- `cost` и `weight`, если нужно переопределить доменные значения producer-операции
+- `cost`, `weight` и `latency_ms`, если нужно переопределить профили producer-операции
+- `latency_ms`, если задача ограничивает суммарную задержку выбранного набора
 
-Если `cost` и `weight` не заданы внутри `variants[]`, planner/runtime пытается взять их из `operation.domain` producer-операции соответствующего stream.
+Если `cost`, `weight` и `latency_ms` не заданы внутри `variants[]`, planner/runtime сначала пытается взять их из `task.operation_profiles[]`, а затем уже из `operation.domain` producer-операции.
 
-Режимы:
-- `runtime_bundle`: selector смотрит на активные сигналы и уже в runtime выбирает самый дешёвый активный набор, который достигает порога веса
-- `compile_time_min_cost`: planner до запуска runtime выбирает самый дешёвый набор вариантов, который достигает порога веса, и вырезает остальные ветки из графа
-- `selected_any`: внутренний режим уже скомпилированного плана; selector работает только по выбранным веткам
-
-В compile-time режиме selector больше не запускает дорогие невыбранные операции вообще: planner переписывает `inputs` и `variants`, а затем удаляет неиспользуемые ветки из документа перед `Build/NewEngine`.
+Planner для требуемых `task.outputs`:
+- берёт из `model` все альтернативы selector'а
+- отбрасывает ветки, которым не хватает доступных `task.inputs`
+- строит кандидатные подграфы
+- оценивает их по `cost/weight/latency`
+- выбирает лучший план по `task.constraints` и `task.objective`
+- переписывает selector в already-selected режим и вырезает неиспользуемые ветки из документа перед `Build/NewEngine`
 
 Если выбранный или активный набор даёт решение, selector публикует:
 - `presence_decision = true`
@@ -303,16 +333,20 @@ Selector для избыточного описания одного домен�
 
 ## Пример 3: redundant presence_v2
 
-`examples/presence_redundant_v2.yaml` показывает избыточность описания доменного факта `presence` с доменными `cost/weight`.
+`examples/presence_redundant_v2.yaml` показывает, как вычислительная модель отделяется от постановки задачи для доменного факта `presence`.
 
 ### Логика графа
 
 - `microphone_source` через `microphone.capture` пишет в `audio_chunk`
-- два `audio.volume_presence` строят два альтернативных описания presence: `loud_audio_presence` и `soft_audio_presence`
+- два `audio.volume_presence` строят два альтернативных сигнала: `loud_audio_presence` и `soft_audio_presence`
 - `keyboard_source` через `keyboard.read` пишет в `pressed_key`
-- у `loud_audio_presence`, `soft_audio_presence` и `keyboard_source` заданы `domain.cost` и `domain.weight`
-- `presence_choice_selector` через `selector.redundant_choice` работает в режиме `compile_time_min_cost`
-- planner до старта runtime выбирает самый дешёвый набор вариантов, который добирает `selection_weight_threshold`
+- сама задача не перечисляет selector и не задаёт маршрут явно
+- задача отдельно задаёт:
+- доступные входы и требуемые выходы
+- профили операций (`cost/weight/latency_ms`)
+- ограничения (`min_total_weight`, `max_total_latency_ms`)
+- целевую функцию (`objective`)
+- planner до старта runtime сам выводит допустимые маршруты из `model` и выбирает лучший план
 - в этом примере planner оставляет `soft_audio_presence + pressed_key` и вырезает ветку `loud_audio_presence`
 - после компиляции selector работает только по выбранному плану и публикует:
 - `presence_decision`
@@ -321,6 +355,8 @@ Selector для избыточного описания одного домен�
 ### Что демонстрирует пример
 
 - один и тот же доменный факт `presence` описан несколькими избыточными способами
+- маршрут исполнения не задаётся в `task`, а выводится planner'ом из `model`
+- разные `task_variants` могут приводить к разным итоговым execution plan
 - система умеет выбрать избыточное описание предметной области до старта runtime, а не после вычисления всех дорогих веток
 - дорогая операция может вообще не попасть в execution plan, если более дешёвый набор операций даёт достаточный суммарный вес
 
@@ -363,7 +399,13 @@ go run ./cmd/runtime -ir ./examples/presence_v2.yaml -debug
 ### Redundant real presence_v2
 
 ```bash
-go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -debug
+go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task low_cost_interactive -debug
+```
+
+Другой вариант постановки задачи:
+
+```bash
+go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task high_confidence_monitoring -debug
 ```
 
 Если нужно зафиксировать конкретный микрофон:
@@ -377,6 +419,7 @@ config:
 
 `cmd/runtime/main.go`:
 - читает путь к IR через `-ir`
+- при необходимости выбирает `task` через `-task`
 - создаёт logger
 - регистрирует все операции
 - выполняет `Load -> Validate -> CompileRedundantChoices -> Validate -> Build -> NewEngine -> Start`

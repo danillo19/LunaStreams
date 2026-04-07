@@ -218,6 +218,7 @@ type redundantChoiceSelector struct {
 	defaultChoice         string
 	plannedStrategy       string
 	selectionWeightTarget float64
+	maxTotalLatencyMS     int
 	variants              []choiceVariant
 }
 
@@ -228,15 +229,17 @@ type choiceVariant struct {
 	keyWindow time.Duration
 	cost      float64
 	weight    float64
+	latencyMS int
 	index     int
 }
 
 type selectedChoice struct {
-	labels []string
-	cost   float64
-	weight float64
-	count  int
-	order  []int
+	labels    []string
+	cost      float64
+	weight    float64
+	latencyMS int
+	count     int
+	order     []int
 }
 
 func newVolumePresence(spec ir.Operation) (rt.Operator, error) {
@@ -326,6 +329,7 @@ func newRedundantChoiceSelector(spec ir.Operation) (rt.Operator, error) {
 		defaultChoice:         stringConfig(spec.Config, "default_choice", "threshold_unmet"),
 		plannedStrategy:       stringConfig(spec.Config, "planned_strategy", ""),
 		selectionWeightTarget: positiveFloatConfig(spec.Config, "selection_weight_threshold", 1.0),
+		maxTotalLatencyMS:     nonNegativeIntConfig(spec.Config, "max_total_latency_ms", 0),
 		variants:              variants,
 	}, nil
 }
@@ -369,7 +373,7 @@ func (o *redundantChoiceSelector) runRuntimeBundle(inputs map[string]any) map[st
 		}
 	}
 
-	best, ok := chooseWeightedVariantSet(active, o.selectionWeightTarget)
+	best, ok := chooseWeightedVariantSet(active, o.selectionWeightTarget, o.maxTotalLatencyMS)
 	if !ok {
 		return map[string]any{
 			o.decisionOutput: false,
@@ -552,6 +556,14 @@ func nonNegativeFloatConfig(config map[string]any, key string, fallback float64)
 	return fallback
 }
 
+func nonNegativeIntConfig(config map[string]any, key string, fallback int) int {
+	value := intConfig(config, key, fallback)
+	if value >= 0 {
+		return value
+	}
+	return fallback
+}
+
 func stringConfig(config map[string]any, key string, fallback string) string {
 	if config == nil {
 		return fallback
@@ -606,12 +618,13 @@ func parseChoiceVariants(spec ir.Operation) ([]choiceVariant, error) {
 		}
 
 		variant := choiceVariant{
-			label:  stringConfig(entry, "label", stream),
-			stream: stream,
-			kind:   stringConfig(entry, "kind", "bool"),
-			cost:   nonNegativeFloatConfig(entry, "cost", 1.0),
-			weight: positiveFloatConfig(entry, "weight", 1.0),
-			index:  index,
+			label:     stringConfig(entry, "label", stream),
+			stream:    stream,
+			kind:      stringConfig(entry, "kind", "bool"),
+			cost:      nonNegativeFloatConfig(entry, "cost", 1.0),
+			weight:    positiveFloatConfig(entry, "weight", 1.0),
+			latencyMS: nonNegativeIntConfig(entry, "latency_ms", 0),
+			index:     index,
 		}
 
 		switch variant.kind {
@@ -645,7 +658,7 @@ func (v choiceVariant) matches(inputs map[string]any) bool {
 	}
 }
 
-func chooseWeightedVariantSet(active []choiceVariant, threshold float64) (selectedChoice, bool) {
+func chooseWeightedVariantSet(active []choiceVariant, threshold float64, maxLatencyMS int) (selectedChoice, bool) {
 	if len(active) == 0 {
 		return selectedChoice{}, false
 	}
@@ -667,11 +680,15 @@ func chooseWeightedVariantSet(active []choiceVariant, threshold float64) (select
 			candidate.labels = append(candidate.labels, variant.label)
 			candidate.cost += variant.cost
 			candidate.weight += variant.weight
+			candidate.latencyMS += variant.latencyMS
 			candidate.count++
 			candidate.order = append(candidate.order, variant.index)
 		}
 
 		if candidate.weight < threshold {
+			continue
+		}
+		if maxLatencyMS > 0 && candidate.latencyMS > maxLatencyMS {
 			continue
 		}
 
@@ -687,6 +704,9 @@ func chooseWeightedVariantSet(active []choiceVariant, threshold float64) (select
 func (c selectedChoice) betterThan(other selectedChoice) bool {
 	if c.cost != other.cost {
 		return c.cost < other.cost
+	}
+	if c.latencyMS != other.latencyMS {
+		return c.latencyMS < other.latencyMS
 	}
 	if c.weight != other.weight {
 		return c.weight > other.weight

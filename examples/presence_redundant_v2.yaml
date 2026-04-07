@@ -1,117 +1,244 @@
-operations:
-  - id: microphone_source
-    kind: source
-    mode: always_on
-    impl: microphone.capture
-    outputs:
-      - stream: audio_chunk
-    config:
-      sample_rate: 16000
-      channels: 1
-      frames_per_chunk: 1024
+model:
+  operations:
+    - id: microphone_source
+      kind: source
+      mode: always_on
+      impl: microphone.capture
+      outputs:
+        - stream: audio_chunk
+      config:
+        sample_rate: 16000
+        channels: 1
+        frames_per_chunk: 1024
 
-  - id: loud_audio_presence
-    kind: transform
-    mode: task_per_event
-    impl: audio.volume_presence
-    domain:
+    - id: loud_audio_presence
+      kind: transform
+      mode: task_per_event
+      impl: audio.volume_presence
+      inputs:
+        - stream: audio_chunk
+      outputs:
+        - stream: loud_audio_presence
+      config:
+        threshold: 0.12
+
+    - id: soft_audio_presence
+      kind: transform
+      mode: task_per_event
+      impl: audio.volume_presence
+      inputs:
+        - stream: audio_chunk
+      outputs:
+        - stream: soft_audio_presence
+      config:
+        threshold: 0.04
+
+    - id: keyboard_source
+      kind: source
+      mode: always_on
+      impl: keyboard.read
+      outputs:
+        - stream: pressed_key
+
+    - id: presence_choice_selector
+      kind: selector
+      mode: always_on
+      impl: selector.redundant_choice
+      inputs:
+        - stream: loud_audio_presence
+        - stream: soft_audio_presence
+        - stream: pressed_key
+      outputs:
+        - stream: presence_decision
+        - stream: presence_strategy
+      config:
+        default_choice: plan_inactive
+        tick_ms: 100
+        variants:
+          - stream: loud_audio_presence
+            kind: bool
+            label: loud_audio
+
+          - stream: soft_audio_presence
+            kind: bool
+            label: soft_audio
+
+          - stream: pressed_key
+            kind: recent_key
+            label: recent_keyboard
+            window_ms: 1500
+
+    - id: presence_sink
+      kind: sink
+      mode: task_per_event
+      impl: output.console
+      inputs:
+        - stream: presence_decision
+
+    - id: strategy_sink
+      kind: sink
+      mode: task_per_event
+      impl: output.console
+      inputs:
+        - stream: presence_strategy
+
+  streams:
+    - id: audio_chunk
+      type: audio_chunk
+
+    - id: loud_audio_presence
+      type: bool
+
+    - id: soft_audio_presence
+      type: bool
+
+    - id: pressed_key
+      type: text
+
+    - id: presence_decision
+      type: bool
+
+    - id: presence_strategy
+      type: text
+
+task:
+  id: low_cost_interactive
+  inputs:
+    - stream: audio_chunk
+    - stream: pressed_key
+
+  outputs:
+    - stream: presence_decision
+    - stream: presence_strategy
+
+  operation_profiles:
+    - operation: loud_audio_presence
       cost: 7
       weight: 0.95
-    inputs:
-      - stream: audio_chunk
-    outputs:
-      - stream: loud_audio_presence
-    config:
-      threshold: 0.12
+      latency_ms: 40
 
-  - id: soft_audio_presence
-    kind: transform
-    mode: task_per_event
-    impl: audio.volume_presence
-    domain:
+    - operation: soft_audio_presence
       cost: 1
       weight: 0.45
+      latency_ms: 8
+
+    - operation: keyboard_source
+      cost: 2
+      weight: 0.40
+      latency_ms: 2
+  constraints:
+    min_total_weight: 0.80
+    max_total_latency_ms: 20
+  objective:
+    primary: min_cost
+    secondary: min_latency
+
+# Примеры минимальных постановок задачи для будущего planner-driven выбора маршрута.
+# Здесь задача задает только доступные входы, требуемые выходы, ограничения и цель оптимизации.
+# Она НЕ указывает selector и НЕ перечисляет варианты веток.
+#
+# При наличии алгоритма route planning система могла бы сама вывести из model,
+# что все эти постановки относятся к одному логическому выходу `presence_decision`,
+# а затем подобрать разный execution plan.
+task_variants:
+  - id: low_cost_interactive
+    inputs:
+      - stream: audio_chunk
+      - stream: pressed_key
+    outputs:
+      - stream: presence_decision
+      - stream: presence_strategy
+    operation_profiles:
+      - operation: loud_audio_presence
+        cost: 7
+        weight: 0.95
+        latency_ms: 40
+      - operation: soft_audio_presence
+        cost: 1
+        weight: 0.45
+        latency_ms: 8
+      - operation: keyboard_source
+        cost: 2
+        weight: 0.40
+        latency_ms: 2
+    constraints:
+      min_total_weight: 0.80
+      max_total_latency_ms: 20
+    objective:
+      primary: min_cost
+      secondary: min_latency
+    # Ожидаемо может привести к плану:
+    # soft_audio_presence + keyboard_source
+
+  - id: high_confidence_monitoring
+    inputs:
+      - stream: audio_chunk
+      - stream: pressed_key
+    outputs:
+      - stream: presence_decision
+      - stream: presence_strategy
+    operation_profiles:
+      - operation: loud_audio_presence
+        cost: 7
+        weight: 0.95
+        latency_ms: 40
+      - operation: soft_audio_presence
+        cost: 1
+        weight: 0.45
+        latency_ms: 8
+      - operation: keyboard_source
+        cost: 2
+        weight: 0.40
+        latency_ms: 2
+    constraints:
+      min_total_weight: 0.90
+      max_total_latency_ms: 50
+    objective:
+      primary: min_cost
+      secondary: max_weight
+    # Ожидаемо может привести к плану:
+    # loud_audio_presence
+
+  - id: audio_only_fast
     inputs:
       - stream: audio_chunk
     outputs:
-      - stream: soft_audio_presence
-    config:
-      threshold: 0.04
+      - stream: presence_decision
+      - stream: presence_strategy
+    operation_profiles:
+      - operation: loud_audio_presence
+        cost: 7
+        weight: 0.95
+        latency_ms: 40
+      - operation: soft_audio_presence
+        cost: 1
+        weight: 0.45
+        latency_ms: 8
+    constraints:
+      min_total_weight: 0.40
+      max_total_latency_ms: 10
+    objective:
+      primary: min_latency
+      secondary: min_cost
+    # Ожидаемо может привести к плану:
+    # soft_audio_presence
 
-  - id: keyboard_source
-    kind: source
-    mode: always_on
-    impl: keyboard.read
-    domain:
-      cost: 2
-      weight: 0.40
-    outputs:
-      - stream: pressed_key
-
-  - id: presence_choice_selector
-    kind: selector
-    mode: always_on
-    impl: selector.redundant_choice
+  - id: keyboard_only_degraded
     inputs:
-      - stream: loud_audio_presence
-      - stream: soft_audio_presence
       - stream: pressed_key
     outputs:
       - stream: presence_decision
       - stream: presence_strategy
-    config:
-      selection_mode: compile_time_min_cost
-      default_choice: plan_inactive
-      selection_weight_threshold: 0.80
-      tick_ms: 100
-      variants:
-        - stream: loud_audio_presence
-          kind: bool
-          label: loud_audio
-        - stream: soft_audio_presence
-          kind: bool
-          label: soft_audio
-        - stream: pressed_key
-          kind: recent_key
-          label: recent_keyboard
-          window_ms: 1500
-
-  - id: presence_sink
-    kind: sink
-    mode: task_per_event
-    impl: output.console
-    inputs:
-      - stream: presence_decision
-
-  - id: strategy_sink
-    kind: sink
-    mode: task_per_event
-    impl: output.console
-    inputs:
-      - stream: presence_strategy
-
-  - id: keyboard_sink
-    kind: sink
-    mode: task_per_event
-    impl: output.console
-    inputs:
-      - stream: pressed_key
-
-streams:
-  - id: audio_chunk
-    type: audio_chunk
-
-  - id: loud_audio_presence
-    type: bool
-
-  - id: soft_audio_presence
-    type: bool
-
-  - id: pressed_key
-    type: text
-
-  - id: presence_decision
-    type: bool
-
-  - id: presence_strategy
-    type: text
+    operation_profiles:
+      - operation: keyboard_source
+        cost: 2
+        weight: 0.40
+        latency_ms: 2
+    constraints:
+      min_total_weight: 0.35
+      max_total_latency_ms: 5
+    objective:
+      primary: min_cost
+      secondary: min_latency
+    # Ожидаемо может привести к плану:
+    # keyboard_source

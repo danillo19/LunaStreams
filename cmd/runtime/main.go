@@ -16,6 +16,7 @@ import (
 
 func main() {
 	irPath := flag.String("ir", "./examples/presence.yaml", "path to IR yaml")
+	taskID := flag.String("task", "", "task id from task/task_variants")
 	debug := flag.Bool("debug", false, "enable debug logs")
 	flag.Parse()
 
@@ -30,6 +31,9 @@ func main() {
 	doc, err := ir.Load(*irPath)
 	if err != nil {
 		log.Fatalf("load ir: %v", err)
+	}
+	if err := ir.ResolveTask(doc, *taskID); err != nil {
+		log.Fatalf("resolve task: %v", err)
 	}
 
 	if err := ir.Validate(doc, registry); err != nil {

@@ -2,6 +2,7 @@ package planner
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -9,10 +10,8 @@ import (
 )
 
 const (
-	SelectionModeRuntimeBundle          = "runtime_bundle"
-	SelectionModeCompileTimeMin         = "compile_time_min_cost"
-	SelectionModeSelectedAny            = "selected_any"
-	defaultWeightThreshold      float64 = 1.0
+	SelectionModeSelectedAny         = "selected_any"
+	defaultWeightThreshold   float64 = 1.0
 )
 
 type PlanResult struct {
@@ -31,23 +30,38 @@ type Decision struct {
 }
 
 type plannedVariant struct {
-	label     string
-	stream    string
-	kind      string
-	keyWindow time.Duration
-	cost      float64
-	weight    float64
-	index     int
-	raw       map[string]any
+	label        string
+	stream       string
+	kind         string
+	keyWindow    time.Duration
+	cost         float64
+	weight       float64
+	latencyMS    int
+	index        int
+	producerID   string
+	operationIDs []string
+	sourceInputs []string
+	raw          map[string]any
 }
 
 type plannedChoice struct {
-	variants []plannedVariant
-	labels   []string
-	streams  []string
-	cost     float64
-	weight   float64
-	order    []int
+	variants  []plannedVariant
+	labels    []string
+	streams   []string
+	cost      float64
+	weight    float64
+	latencyMS int
+	order     []int
+}
+
+type planningContext struct {
+	availableInputs map[string]struct{}
+	minWeight       float64
+	maxLatencyMS    int
+	maxCost         float64
+	hasMaxCost      bool
+	primary         string
+	secondary       string
 }
 
 func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
@@ -58,6 +72,10 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 	cloned := cloneDocument(doc)
 	producerByStream := buildProducerByStream(cloned)
 	operationsByID := buildOperationsByID(cloned)
+	operationProfiles := buildOperationProfiles(cloned.Task.OperationProfiles)
+	selectorTasks := buildSelectorTasks(cloned.Task.Selectors)
+	requiredOps := requiredOperationIDs(cloned, taskOutputStreams(cloned.Task.Outputs))
+	context := buildPlanningContext(cloned.Task)
 
 	var decisions []Decision
 	for index := range cloned.Operations {
@@ -65,20 +83,29 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 		if op.Impl != "selector.redundant_choice" {
 			continue
 		}
-
-		mode := stringConfig(op.Config, "selection_mode", SelectionModeRuntimeBundle)
-		if mode != SelectionModeCompileTimeMin {
-			continue
+		if len(requiredOps) > 0 {
+			if _, required := requiredOps[op.ID]; !required {
+				continue
+			}
 		}
 
-		variants, err := parsePlannedVariants(op, producerByStream, operationsByID)
+		if selectorTask, exists := selectorTasks[op.ID]; exists {
+			op = applySelectorTask(op, selectorTask)
+		}
+
+		variants, err := parsePlannedVariants(op, producerByStream, operationsByID, operationProfiles)
 		if err != nil {
 			return nil, err
 		}
-		threshold := positiveFloatConfig(op.Config, "selection_weight_threshold", defaultWeightThreshold)
-		choice, ok := choosePlannedChoice(variants, threshold)
+		for variantIndex := range variants {
+			variant := &variants[variantIndex]
+			variant.producerID = producerByStream[variant.stream]
+			variant.operationIDs, variant.sourceInputs = collectVariantClosure(cloned, variant.stream)
+		}
+
+		choice, ok := choosePlannedChoice(variants, operationsByID, operationProfiles, context, op.Config)
 		if !ok {
-			return nil, fmt.Errorf("selector %q has no plan that reaches weight threshold %.2f", op.ID, threshold)
+			return nil, fmt.Errorf("selector %q has no feasible plan for task constraints", op.ID)
 		}
 
 		selectedStreams := make([]string, 0, len(choice.variants))
@@ -91,7 +118,7 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 			selectedStreams = append(selectedStreams, variant.stream)
 			selectedInputs = append(selectedInputs, ir.StreamRef{Stream: variant.stream})
 			selectedRawVariants = append(selectedRawVariants, variant.raw)
-			if producerID, ok := producerByStream[variant.stream]; ok {
+			if producerID := variant.producerID; producerID != "" {
 				selectedProducers[producerID] = struct{}{}
 			}
 		}
@@ -126,42 +153,72 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 		})
 	}
 
-	pruned := pruneToRequiredSubgraph(cloned)
+	pruned := pruneToRequiredSubgraph(cloned, taskOutputStreams(cloned.Task.Outputs))
 	return &PlanResult{
 		Document:  pruned,
 		Decisions: decisions,
 	}, nil
 }
 
-func choosePlannedChoice(variants []plannedVariant, threshold float64) (plannedChoice, bool) {
+func choosePlannedChoice(variants []plannedVariant, operationsByID map[string]ir.Operation, profiles map[string]ir.OperationProfile, context planningContext, selectorConfig map[string]any) (plannedChoice, bool) {
 	if len(variants) == 0 {
 		return plannedChoice{}, false
 	}
-	if threshold <= 0 {
-		threshold = defaultWeightThreshold
+
+	minWeight := context.minWeight
+	if minWeight <= 0 {
+		minWeight = positiveFloatConfig(selectorConfig, "selection_weight_threshold", defaultWeightThreshold)
+	}
+	maxLatencyMS := context.maxLatencyMS
+	if maxLatencyMS <= 0 {
+		maxLatencyMS = nonNegativeIntConfig(selectorConfig, "max_total_latency_ms", 0)
+	}
+
+	candidates := make([]plannedVariant, 0, len(variants))
+	for _, variant := range variants {
+		if !variantAvailable(variant, context.availableInputs) {
+			continue
+		}
+		candidates = append(candidates, variant)
+	}
+	if len(candidates) == 0 {
+		return plannedChoice{}, false
 	}
 
 	var best plannedChoice
 	bestFound := false
-	limit := 1 << len(variants)
+	limit := 1 << len(candidates)
 	for mask := 1; mask < limit; mask++ {
 		candidate := plannedChoice{}
-		for index, variant := range variants {
+		operationIDs := make(map[string]struct{})
+		producerOverrides := make(map[string]plannedVariant)
+		for index, variant := range candidates {
 			if mask&(1<<index) == 0 {
 				continue
 			}
 			candidate.variants = append(candidate.variants, variant)
 			candidate.labels = append(candidate.labels, variant.label)
 			candidate.streams = append(candidate.streams, variant.stream)
-			candidate.cost += variant.cost
-			candidate.weight += variant.weight
 			candidate.order = append(candidate.order, variant.index)
+			if variant.producerID != "" {
+				producerOverrides[variant.producerID] = variant
+			}
+			for _, opID := range variant.operationIDs {
+				operationIDs[opID] = struct{}{}
+			}
 		}
 
-		if candidate.weight < threshold {
+		candidate.cost, candidate.weight, candidate.latencyMS = aggregateChoiceMetrics(operationIDs, producerOverrides, operationsByID, profiles)
+		if candidate.weight < minWeight {
 			continue
 		}
-		if !bestFound || candidate.betterThan(best) {
+		if maxLatencyMS > 0 && candidate.latencyMS > maxLatencyMS {
+			continue
+		}
+		if context.hasMaxCost && candidate.cost > context.maxCost {
+			continue
+		}
+		if !bestFound || candidate.betterThan(best, context) {
 			best = candidate
 			bestFound = true
 		}
@@ -170,12 +227,22 @@ func choosePlannedChoice(variants []plannedVariant, threshold float64) (plannedC
 	return best, bestFound
 }
 
-func (c plannedChoice) betterThan(other plannedChoice) bool {
-	if c.cost != other.cost {
-		return c.cost < other.cost
-	}
-	if c.weight != other.weight {
-		return c.weight > other.weight
+func (c plannedChoice) betterThan(other plannedChoice, context planningContext) bool {
+	for _, objective := range []string{context.primary, context.secondary, "min_cost", "min_latency", "max_weight"} {
+		switch objective {
+		case "", "min_cost":
+			if c.cost != other.cost {
+				return c.cost < other.cost
+			}
+		case "min_latency":
+			if c.latencyMS != other.latencyMS {
+				return c.latencyMS < other.latencyMS
+			}
+		case "max_weight":
+			if c.weight != other.weight {
+				return c.weight > other.weight
+			}
+		}
 	}
 	if len(c.variants) != len(other.variants) {
 		return len(c.variants) < len(other.variants)
@@ -192,7 +259,7 @@ func (c plannedChoice) describe() string {
 	return fmt.Sprintf("%s | cost=%.2f weight=%.2f", strings.Join(c.labels, "+"), c.cost, c.weight)
 }
 
-func parsePlannedVariants(op ir.Operation, producerByStream map[string]string, operationsByID map[string]ir.Operation) ([]plannedVariant, error) {
+func parsePlannedVariants(op ir.Operation, producerByStream map[string]string, operationsByID map[string]ir.Operation, profiles map[string]ir.OperationProfile) ([]plannedVariant, error) {
 	rawVariants, ok := op.Config["variants"]
 	if !ok {
 		return nil, fmt.Errorf("selector %q requires config.variants", op.ID)
@@ -217,7 +284,25 @@ func parsePlannedVariants(op ir.Operation, producerByStream map[string]string, o
 
 		cost, hasCost := floatValue(entry["cost"])
 		weight, hasWeight := floatValue(entry["weight"])
+		latencyMS, hasLatency := intValue(entry["latency_ms"])
 		if producerID, ok := producerByStream[streamID]; ok {
+			if profile, exists := profiles[producerID]; exists {
+				if !hasCost && profile.Cost != nil {
+					cost = *profile.Cost
+					hasCost = true
+					entry["cost"] = cost
+				}
+				if !hasWeight && profile.Weight != nil {
+					weight = *profile.Weight
+					hasWeight = true
+					entry["weight"] = weight
+				}
+				if !hasLatency && profile.LatencyMS != nil {
+					latencyMS = *profile.LatencyMS
+					hasLatency = true
+					entry["latency_ms"] = latencyMS
+				}
+			}
 			if producer, exists := operationsByID[producerID]; exists {
 				if !hasCost && producer.Domain.Cost != nil {
 					cost = *producer.Domain.Cost
@@ -239,22 +324,27 @@ func parsePlannedVariants(op ir.Operation, producerByStream map[string]string, o
 			weight = 1.0
 			entry["weight"] = weight
 		}
+		if !hasLatency || latencyMS < 0 {
+			latencyMS = 0
+			entry["latency_ms"] = latencyMS
+		}
 
 		variants = append(variants, plannedVariant{
-			label:  stringConfig(entry, "label", streamID),
-			stream: streamID,
-			kind:   stringConfig(entry, "kind", "bool"),
-			cost:   cost,
-			weight: weight,
-			index:  index,
-			raw:    entry,
+			label:     stringConfig(entry, "label", streamID),
+			stream:    streamID,
+			kind:      stringConfig(entry, "kind", "bool"),
+			cost:      cost,
+			weight:    weight,
+			latencyMS: latencyMS,
+			index:     index,
+			raw:       entry,
 		})
 	}
 
 	return variants, nil
 }
 
-func pruneToRequiredSubgraph(doc *ir.Document) *ir.Document {
+func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string) *ir.Document {
 	if doc == nil {
 		return nil
 	}
@@ -264,17 +354,31 @@ func pruneToRequiredSubgraph(doc *ir.Document) *ir.Document {
 	streamsByID := buildStreamsByID(doc)
 
 	requiredStreams := make(map[string]struct{})
+	requiredOutputSet := make(map[string]struct{}, len(requiredOutputStreams))
 	queue := make([]string, 0)
-	for _, op := range doc.Operations {
-		if op.Kind != ir.OperationKindSink {
+	for _, streamID := range requiredOutputStreams {
+		if streamID == "" {
 			continue
 		}
-		for _, input := range op.Inputs {
-			if _, exists := requiredStreams[input.Stream]; exists {
+		requiredOutputSet[streamID] = struct{}{}
+		if _, exists := requiredStreams[streamID]; exists {
+			continue
+		}
+		requiredStreams[streamID] = struct{}{}
+		queue = append(queue, streamID)
+	}
+	if len(requiredStreams) == 0 {
+		for _, op := range doc.Operations {
+			if op.Kind != ir.OperationKindSink {
 				continue
 			}
-			requiredStreams[input.Stream] = struct{}{}
-			queue = append(queue, input.Stream)
+			for _, input := range op.Inputs {
+				if _, exists := requiredStreams[input.Stream]; exists {
+					continue
+				}
+				requiredStreams[input.Stream] = struct{}{}
+				queue = append(queue, input.Stream)
+			}
 		}
 	}
 
@@ -312,15 +416,24 @@ func pruneToRequiredSubgraph(doc *ir.Document) *ir.Document {
 
 	for _, op := range doc.Operations {
 		if op.Kind == ir.OperationKindSink {
-			keep := false
-			for _, input := range op.Inputs {
-				if _, exists := requiredStreams[input.Stream]; exists {
-					keep = true
-					break
+			if len(requiredOutputSet) > 0 {
+				for _, input := range op.Inputs {
+					if _, exists := requiredOutputSet[input.Stream]; exists {
+						pruned.Operations = append(pruned.Operations, op)
+						break
+					}
 				}
-			}
-			if keep {
-				pruned.Operations = append(pruned.Operations, op)
+			} else {
+				keep := false
+				for _, input := range op.Inputs {
+					if _, exists := requiredStreams[input.Stream]; exists {
+						keep = true
+						break
+					}
+				}
+				if keep {
+					pruned.Operations = append(pruned.Operations, op)
+				}
 			}
 			continue
 		}
@@ -343,8 +456,10 @@ func pruneToRequiredSubgraph(doc *ir.Document) *ir.Document {
 
 func cloneDocument(doc *ir.Document) *ir.Document {
 	cloned := &ir.Document{
-		Operations: make([]ir.Operation, 0, len(doc.Operations)),
-		Streams:    append([]ir.Stream(nil), doc.Streams...),
+		Operations:   make([]ir.Operation, 0, len(doc.Operations)),
+		Streams:      append([]ir.Stream(nil), doc.Streams...),
+		Task:         cloneTask(doc.Task),
+		TaskVariants: cloneTaskVariants(doc.TaskVariants),
 	}
 
 	for _, op := range doc.Operations {
@@ -360,6 +475,10 @@ func cloneDocument(doc *ir.Document) *ir.Document {
 		})
 	}
 
+	cloned.Model = ir.ModelSpec{
+		Operations: append([]ir.Operation(nil), cloned.Operations...),
+		Streams:    append([]ir.Stream(nil), cloned.Streams...),
+	}
 	return cloned
 }
 
@@ -423,6 +542,26 @@ func cloneValue(value any) any {
 	}
 }
 
+func cloneTask(task ir.TaskSpec) ir.TaskSpec {
+	return ir.TaskSpec{
+		ID:                task.ID,
+		Inputs:            append([]ir.TaskStreamRef(nil), task.Inputs...),
+		Outputs:           append([]ir.TaskStreamRef(nil), task.Outputs...),
+		OperationProfiles: append([]ir.OperationProfile(nil), task.OperationProfiles...),
+		Constraints:       task.Constraints,
+		Objective:         task.Objective,
+		Selectors:         append([]ir.SelectorTask(nil), task.Selectors...),
+	}
+}
+
+func cloneTaskVariants(tasks []ir.TaskSpec) []ir.TaskSpec {
+	result := make([]ir.TaskSpec, 0, len(tasks))
+	for _, task := range tasks {
+		result = append(result, cloneTask(task))
+	}
+	return result
+}
+
 func floatValue(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case int:
@@ -431,6 +570,19 @@ func floatValue(value any) (float64, bool) {
 		return float64(typed), true
 	case float64:
 		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func intValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
 	default:
 		return 0, false
 	}
@@ -462,6 +614,17 @@ func positiveFloatConfig(config map[string]any, key string, fallback float64) fl
 	return value
 }
 
+func nonNegativeIntConfig(config map[string]any, key string, fallback int) int {
+	if config == nil {
+		return fallback
+	}
+	value, ok := intValue(config[key])
+	if !ok || value < 0 {
+		return fallback
+	}
+	return value
+}
+
 func uniqueStrings(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
@@ -474,6 +637,276 @@ func uniqueStrings(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		result = append(result, value)
+	}
+	return result
+}
+
+func buildOperationProfiles(profiles []ir.OperationProfile) map[string]ir.OperationProfile {
+	result := make(map[string]ir.OperationProfile, len(profiles))
+	for _, profile := range profiles {
+		if profile.Operation == "" {
+			continue
+		}
+		result[profile.Operation] = profile
+	}
+	return result
+}
+
+func buildSelectorTasks(selectors []ir.SelectorTask) map[string]ir.SelectorTask {
+	result := make(map[string]ir.SelectorTask, len(selectors))
+	for _, selector := range selectors {
+		if selector.ID == "" {
+			continue
+		}
+		result[selector.ID] = selector
+	}
+	return result
+}
+
+func buildPlanningContext(task ir.TaskSpec) planningContext {
+	context := planningContext{
+		availableInputs: make(map[string]struct{}, len(task.Inputs)),
+		minWeight:       defaultWeightThreshold,
+		primary:         task.Objective.Primary,
+		secondary:       task.Objective.Secondary,
+	}
+	for _, input := range task.Inputs {
+		if input.Stream == "" {
+			continue
+		}
+		context.availableInputs[input.Stream] = struct{}{}
+	}
+	if task.Constraints.MinTotalWeight != nil {
+		context.minWeight = *task.Constraints.MinTotalWeight
+	}
+	if task.Constraints.MaxTotalLatencyMS != nil {
+		context.maxLatencyMS = *task.Constraints.MaxTotalLatencyMS
+	}
+	if task.Constraints.MaxTotalCost != nil {
+		context.maxCost = *task.Constraints.MaxTotalCost
+		context.hasMaxCost = true
+	}
+	if context.primary == "" {
+		context.primary = "min_cost"
+	}
+	if context.secondary == "" {
+		context.secondary = "min_latency"
+	}
+	return context
+}
+
+func variantAvailable(variant plannedVariant, availableInputs map[string]struct{}) bool {
+	if len(availableInputs) == 0 {
+		return true
+	}
+	for _, input := range variant.sourceInputs {
+		if _, exists := availableInputs[input]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func aggregateChoiceMetrics(operationIDs map[string]struct{}, producerOverrides map[string]plannedVariant, operationsByID map[string]ir.Operation, profiles map[string]ir.OperationProfile) (float64, float64, int) {
+	var totalCost float64
+	var totalWeight float64
+	totalLatency := 0
+
+	for opID := range operationIDs {
+		if override, exists := producerOverrides[opID]; exists {
+			totalCost += override.cost
+			totalWeight += override.weight
+			totalLatency += override.latencyMS
+			continue
+		}
+		op, exists := operationsByID[opID]
+		if !exists {
+			continue
+		}
+		cost, weight, latency := operationMetrics(op, profiles)
+		totalCost += cost
+		totalWeight += weight
+		totalLatency += latency
+	}
+
+	return totalCost, totalWeight, totalLatency
+}
+
+func operationMetrics(op ir.Operation, profiles map[string]ir.OperationProfile) (float64, float64, int) {
+	if profile, exists := profiles[op.ID]; exists {
+		var cost float64
+		var weight float64
+		latency := 0
+		if profile.Cost != nil {
+			cost = *profile.Cost
+		}
+		if profile.Weight != nil {
+			weight = *profile.Weight
+		}
+		if profile.LatencyMS != nil {
+			latency = *profile.LatencyMS
+		}
+		return cost, weight, latency
+	}
+
+	var cost float64
+	var weight float64
+	if op.Domain.Cost != nil {
+		cost = *op.Domain.Cost
+	}
+	if op.Domain.Weight != nil {
+		weight = *op.Domain.Weight
+	}
+	return cost, weight, 0
+}
+
+func collectVariantClosure(doc *ir.Document, streamID string) ([]string, []string) {
+	producerByStream := buildProducerByStream(doc)
+	operationsByID := buildOperationsByID(doc)
+	requiredOps := make(map[string]struct{})
+	requiredInputs := make(map[string]struct{})
+
+	var visitStream func(string)
+	visitStream = func(currentStream string) {
+		producerID, exists := producerByStream[currentStream]
+		if !exists {
+			return
+		}
+		op, exists := operationsByID[producerID]
+		if !exists {
+			return
+		}
+		requiredOps[producerID] = struct{}{}
+		if op.Kind == ir.OperationKindSource {
+			requiredInputs[currentStream] = struct{}{}
+			return
+		}
+		for _, input := range op.Inputs {
+			visitStream(input.Stream)
+		}
+	}
+
+	visitStream(streamID)
+	return sortedKeys(requiredOps), sortedKeys(requiredInputs)
+}
+
+func requiredOperationIDs(doc *ir.Document, requiredOutputStreams []string) map[string]struct{} {
+	if doc == nil {
+		return nil
+	}
+	producerByStream := buildProducerByStream(doc)
+	operationsByID := buildOperationsByID(doc)
+	requiredOps := make(map[string]struct{})
+	queue := make([]string, 0, len(requiredOutputStreams))
+	queue = append(queue, requiredOutputStreams...)
+
+	if len(queue) == 0 {
+		for _, op := range doc.Operations {
+			if op.Kind != ir.OperationKindSink {
+				continue
+			}
+			for _, input := range op.Inputs {
+				queue = append(queue, input.Stream)
+			}
+		}
+	}
+
+	seenStreams := make(map[string]struct{}, len(queue))
+	for len(queue) > 0 {
+		streamID := queue[0]
+		queue = queue[1:]
+		if _, seen := seenStreams[streamID]; seen {
+			continue
+		}
+		seenStreams[streamID] = struct{}{}
+
+		producerID, exists := producerByStream[streamID]
+		if !exists {
+			continue
+		}
+		if _, seen := requiredOps[producerID]; seen {
+			continue
+		}
+		requiredOps[producerID] = struct{}{}
+		op := operationsByID[producerID]
+		for _, input := range op.Inputs {
+			queue = append(queue, input.Stream)
+		}
+	}
+
+	return requiredOps
+}
+
+func sortedKeys(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for key := range values {
+		result = append(result, key)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func applySelectorTask(op ir.Operation, selector ir.SelectorTask) ir.Operation {
+	config := cloneMap(op.Config)
+	if config == nil {
+		config = make(map[string]any)
+	}
+
+	if selector.SelectionMode != "" {
+		config["selection_mode"] = selector.SelectionMode
+	}
+	if selector.DefaultChoice != "" {
+		config["default_choice"] = selector.DefaultChoice
+	}
+	if selector.SelectionWeightThreshold != nil {
+		config["selection_weight_threshold"] = *selector.SelectionWeightThreshold
+	}
+	if selector.MaxTotalLatencyMS != nil {
+		config["max_total_latency_ms"] = *selector.MaxTotalLatencyMS
+	}
+	if len(selector.Variants) > 0 {
+		inputs := make([]ir.StreamRef, 0, len(selector.Variants))
+		rawVariants := make([]any, 0, len(selector.Variants))
+		for _, variant := range selector.Variants {
+			inputs = append(inputs, ir.StreamRef{Stream: variant.Stream})
+			entry := map[string]any{
+				"stream": variant.Stream,
+			}
+			if variant.Kind != "" {
+				entry["kind"] = variant.Kind
+			}
+			if variant.Label != "" {
+				entry["label"] = variant.Label
+			}
+			if variant.WindowMS != nil {
+				entry["window_ms"] = *variant.WindowMS
+			}
+			if variant.Cost != nil {
+				entry["cost"] = *variant.Cost
+			}
+			if variant.Weight != nil {
+				entry["weight"] = *variant.Weight
+			}
+			if variant.LatencyMS != nil {
+				entry["latency_ms"] = *variant.LatencyMS
+			}
+			rawVariants = append(rawVariants, entry)
+		}
+		op.Inputs = inputs
+		config["variants"] = rawVariants
+	}
+
+	op.Config = config
+	return op
+}
+
+func taskOutputStreams(outputs []ir.TaskStreamRef) []string {
+	result := make([]string, 0, len(outputs))
+	for _, output := range outputs {
+		if output.Stream == "" {
+			continue
+		}
+		result = append(result, output.Stream)
 	}
 	return result
 }

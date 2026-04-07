@@ -1,71 +1,80 @@
-operations:
-  - id: microphone_source
-    kind: source
-    mode: always_on
-    impl: microphone.capture
-    outputs:
-      - stream: audio_chunk
-    config:
-      sample_rate: 16000
-      channels: 1
-      frames_per_chunk: 1024
+model:
+  operations:
+    - id: microphone_source
+      kind: source
+      mode: always_on
+      impl: microphone.capture
+      outputs:
+        - stream: audio_chunk
+      config:
+        sample_rate: 16000
+        channels: 1
+        frames_per_chunk: 1024
 
-  - id: volume_presence
-    kind: transform
-    mode: task_per_event
-    impl: audio.volume_presence
-    inputs:
-      - stream: audio_chunk
-    outputs:
-      - stream: audio_presence
-    config:
-      threshold: 0.08
+    - id: volume_presence
+      kind: transform
+      mode: task_per_event
+      impl: audio.volume_presence
+      inputs:
+        - stream: audio_chunk
+      outputs:
+        - stream: audio_presence
+      config:
+        threshold: 0.08
 
-  - id: presence_selector
-    kind: selector
-    mode: always_on
-    impl: selector.audio_or_recent_key
-    inputs:
-      - stream: audio_presence
-      - stream: pressed_key
-    outputs:
-      - stream: presence_decision
-    config:
-      audio_stream: audio_presence
-      key_stream: pressed_key
-      keyboard_window_ms: 1500
-      tick_ms: 100
+    - id: presence_selector
+      kind: selector
+      mode: always_on
+      impl: selector.audio_or_recent_key
+      inputs:
+        - stream: audio_presence
+        - stream: pressed_key
+      outputs:
+        - stream: presence_decision
+      config:
+        audio_stream: audio_presence
+        key_stream: pressed_key
+        keyboard_window_ms: 1500
+        tick_ms: 100
 
-  - id: presence_sink
-    kind: sink
-    mode: task_per_event
-    impl: output.console
-    inputs:
-      - stream: presence_decision
+    - id: presence_sink
+      kind: sink
+      mode: task_per_event
+      impl: output.console
+      inputs:
+        - stream: presence_decision
 
-  - id: keyboard_source
-    kind: source
-    mode: always_on
-    impl: keyboard.read
-    outputs:
-      - stream: pressed_key
+    - id: keyboard_source
+      kind: source
+      mode: always_on
+      impl: keyboard.read
+      outputs:
+        - stream: pressed_key
 
-  - id: keyboard_sink
-    kind: sink
-    mode: task_per_event
-    impl: output.console
-    inputs:
-      - stream: pressed_key
+    - id: keyboard_sink
+      kind: sink
+      mode: task_per_event
+      impl: output.console
+      inputs:
+        - stream: pressed_key
 
-streams:
-  - id: audio_chunk
-    type: audio_chunk
+  streams:
+    - id: audio_chunk
+      type: audio_chunk
 
-  - id: audio_presence
-    type: bool
+    - id: audio_presence
+      type: bool
 
-  - id: presence_decision
-    type: bool
+    - id: presence_decision
+      type: bool
 
-  - id: pressed_key
-    type: text
+    - id: pressed_key
+      type: text
+
+task:
+  inputs:
+    - stream: audio_chunk
+    - stream: pressed_key
+
+  outputs:
+    - stream: presence_decision
