@@ -9,9 +9,9 @@ IR теперь разделяет:
 Проект уже поддерживает три основных сценария:
 - `examples/presence.yaml`: полностью mock pipeline для presence detection
 - `examples/presence_v2.yaml`: pipeline с реальным микрофоном и клавиатурой
-- `examples/presence_redundant_v2.yaml`: real pipeline, где задача отдельно задаёт требования и planner сам выбирает маршрут
+- `examples/presence_redundant_v2.yaml`: redundant pipeline, где задача отдельно задаёт требования и planner сам выбирает маршрут. Этот же пример демонстрирует смешанный polyglot-stack: Go-операции для микрофона и клавиатуры, Python-subprocess для камеры и компьютерного зрения.
 
-Подробная архитектура компонентов вынесена в `docs/runtime-components.md`.
+Подробная архитектура компонентов вынесена в `docs/runtime-components.md`, а polyglot-контракт — в `docs/operation-interface.md`.
 
 ## Идея
 
@@ -27,13 +27,16 @@ Runtime исполняет граф операций, где:
 
 ```text
 cmd/runtime/main.go                 # entrypoint runtime
-internal/ir/                       # IR-модель, загрузка, валидация
-internal/planner/                  # compile-time выбор redundant планов
-internal/graph/                    # построение producer/consumer graph
-internal/runtime/                  # engine, store, bus, registry, logger
-internal/runtime/ops/              # mock и реальные impl операций
-examples/                          # примеры IR
-docs/runtime-components.md         # подробная архитектура компонентов
+internal/ir/                        # IR-модель, загрузка, валидация
+internal/planner/                   # compile-time выбор redundant планов
+internal/graph/                     # построение producer/consumer graph
+internal/runtime/                   # engine, store, bus, registry, logger
+internal/runtime/ops/               # inproc_go impl операций
+internal/runtime/drivers/           # runtime-драйверы: subprocess (NDJSON), задел под docker/grpc/http
+examples/                           # примеры IR
+examples/ops/                       # polyglot-реализации операций (Python)
+docs/runtime-components.md          # подробная архитектура компонентов
+docs/operation-interface.md         # контракт polyglot-операции (RunRequest / RunResult)
 ```
 
 ## Формат IR
@@ -78,6 +81,7 @@ task:
   - `always_on`
   - `task_per_event`
 - `impl`: строковый ключ реализации, который должен быть зарегистрирован в `Registry`
+- `runtime`: описывает, как запускать реализацию (опционально, см. ниже)
 - `inputs[]`: входные streams
 - `outputs[]`: выходные streams
 - `config`: свободная конфигурация реализации
@@ -86,6 +90,45 @@ task:
   - `weight`: вклад операции в итоговую надёжность/полезность решения
 
 `domain` сохранён для совместимости, но для новых постановок задачи предпочтительно использовать `task.operation_profiles`.
+
+### Поле `operation.runtime`
+
+`runtime` описывает способ запуска реализации операции. Поле опционально:
+пустой `runtime` эквивалентен `kind: inproc_go` — Go-фабрика из `Registry`.
+Runtime позволяет смешивать на одном графе операции разной природы:
+
+```yaml
+runtime:
+  kind: subprocess                # | inproc_go | docker | grpc | http
+  command: [python3, ops/face_presence.py]
+  args: []
+  work_dir: ""
+  env:
+    PYTHONUNBUFFERED: "1"
+  image: ""                       # для docker runtime
+  endpoint: ""                    # для grpc/http runtime
+```
+
+Поддерживаемые kind-ы и их требования:
+
+| kind          | Когда используется                    | Обязательные поля       |
+|---------------|----------------------------------------|-------------------------|
+| `inproc_go`   | обычная Go-операция                    | —                       |
+| `subprocess`  | Python / Node / Rust / bash-процессы   | `command`               |
+| `docker`      | контейнеризированный код (roadmap)     | `image`                 |
+| `grpc`/`http` | внешний сервис (roadmap)               | `endpoint`              |
+
+Каждому `kind` соответствует драйвер, зарегистрированный в `runtime.Registry`
+через `RegisterDriver(kind, driver)`. Драйвер реализует интерфейс
+`OperationRuntime.Create(spec) -> Operator`. Чтобы добавить новую среду
+исполнения (например, WASM, Kubernetes Job, AWS Lambda), достаточно
+реализовать один тип и зарегистрировать его — IR, planner и engine менять
+не нужно.
+
+Контракт данных для polyglot-драйверов (RunRequest/RunResult, schema,
+encoding) описан в `docs/operation-interface.md`. Справочная реализация
+субпроцесс-драйвера лежит в `internal/runtime/drivers/subprocess.go`, а
+примеры polyglot-операций — в `examples/ops/`.
 
 ### Поля `model.stream`
 
@@ -414,6 +457,22 @@ go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task high_confid
 config:
   device_name_contains: "MacBook"
 ```
+
+### Camera + Python vision
+
+`camera_vision_accurate` прогоняет камеру через Python-операцию детекции
+лица (OpenCV Haar cascade):
+
+```bash
+pip install -r examples/ops/requirements.txt
+go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task camera_vision_accurate -debug
+```
+
+Go runtime запускает `examples/ops/camera_capture.py` и
+`examples/ops/face_presence.py` как долгоживущие subprocess-ы и общается
+с ними по protocol-у из `docs/operation-interface.md`. Никакого C-binding
+для камеры в Go не требуется — любая реализация сводится к добавлению
+скрипта/бинаря и записи `runtime.kind` + `runtime.command` в IR.
 
 ## Точка входа
 

@@ -7,6 +7,7 @@ import (
 
 	"LunaStreams/internal/ir"
 	rt "LunaStreams/internal/runtime"
+	"LunaStreams/internal/runtime/drivers"
 )
 
 type Frame struct {
@@ -42,6 +43,10 @@ func RegisterAll(registry *rt.Registry) error {
 		if err := registry.Register(registration.impl, registration.factory); err != nil {
 			return err
 		}
+	}
+
+	if err := registry.RegisterDriver("subprocess", drivers.NewSubprocessDriver(rt.DefaultLogger())); err != nil {
+		return err
 	}
 
 	return nil

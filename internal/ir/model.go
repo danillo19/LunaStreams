@@ -64,10 +64,25 @@ type Operation struct {
 	Kind    OperationKind   `yaml:"kind"`
 	Mode    OperationMode   `yaml:"mode"`
 	Impl    string          `yaml:"impl"`
+	Runtime RuntimeSpec     `yaml:"runtime"`
 	Inputs  []StreamRef     `yaml:"inputs"`
 	Outputs []StreamRef     `yaml:"outputs"`
 	Config  map[string]any  `yaml:"config"`
 	Domain  OperationDomain `yaml:"domain"`
+}
+
+// RuntimeSpec описывает способ запуска операции: в процессе Go, во внешнем
+// процессе (Python/Node/Rust), в Docker-контейнере, через gRPC и т.п.
+// Пустой Kind эквивалентен "inproc_go" и включает обратную совместимость со
+// старыми IR, где операция реализована фабрикой в Go.
+type RuntimeSpec struct {
+	Kind     string            `yaml:"kind"`
+	Command  []string          `yaml:"command"`
+	Args     []string          `yaml:"args"`
+	Env      map[string]string `yaml:"env"`
+	WorkDir  string            `yaml:"work_dir"`
+	Image    string            `yaml:"image"`
+	Endpoint string            `yaml:"endpoint"`
 }
 
 type OperationDomain struct {

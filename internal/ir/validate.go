@@ -5,8 +5,12 @@ import (
 	"strings"
 )
 
+// ImplRegistry проверяет, может ли runtime создать реализацию для операции.
+// Учитывается не только Impl-идентификатор, но и RuntimeSpec (inproc_go,
+// subprocess, docker, grpc, ...). Это позволяет декларативно смешивать
+// операции, реализованные на разных стэках: Go, Python, внешние сервисы и т.д.
 type ImplRegistry interface {
-	Has(impl string) bool
+	Supports(op Operation) bool
 }
 
 func Validate(doc *Document, registry ImplRegistry) error {
@@ -45,9 +49,10 @@ func Validate(doc *Document, registry ImplRegistry) error {
 
 		if op.Impl == "" {
 			problems = append(problems, fmt.Sprintf("operation %q has empty impl", op.ID))
-		} else if registry != nil && !registry.Has(op.Impl) {
-			problems = append(problems, fmt.Sprintf("operation %q uses unregistered impl %q", op.ID, op.Impl))
+		} else if registry != nil && !registry.Supports(op) {
+			problems = append(problems, fmt.Sprintf("operation %q uses unsupported impl %q (runtime kind=%q)", op.ID, op.Impl, op.Runtime.Kind))
 		}
+		problems = append(problems, validateRuntimeSpec(op)...)
 		if op.Domain.Cost != nil && *op.Domain.Cost < 0 {
 			problems = append(problems, fmt.Sprintf("operation %q has negative domain.cost", op.ID))
 		}
@@ -282,6 +287,34 @@ func selectorVariantStreams(config map[string]any) []string {
 		result = append(result, streamID)
 	}
 	return result
+}
+
+// validateRuntimeSpec проверяет минимальные инварианты runtime-секции.
+// Каждый kind нуждается в своём минимальном наборе полей: subprocess/docker
+// — команда, grpc/http — endpoint. Сами kind-ы регистрируются в runtime
+// registry отдельно, здесь мы только ловим явные опечатки в IR.
+func validateRuntimeSpec(op Operation) []string {
+	var problems []string
+	runtime := op.Runtime
+	switch runtime.Kind {
+	case "", "inproc_go":
+		if len(runtime.Command) > 0 || runtime.Image != "" || runtime.Endpoint != "" {
+			problems = append(problems, fmt.Sprintf("operation %q uses inproc_go runtime but specifies command/image/endpoint", op.ID))
+		}
+	case "subprocess":
+		if len(runtime.Command) == 0 {
+			problems = append(problems, fmt.Sprintf("operation %q (runtime=subprocess) requires runtime.command", op.ID))
+		}
+	case "docker":
+		if runtime.Image == "" {
+			problems = append(problems, fmt.Sprintf("operation %q (runtime=docker) requires runtime.image", op.ID))
+		}
+	case "grpc", "http":
+		if runtime.Endpoint == "" {
+			problems = append(problems, fmt.Sprintf("operation %q (runtime=%s) requires runtime.endpoint", op.ID, runtime.Kind))
+		}
+	}
+	return problems
 }
 
 func isSupportedObjective(value string) bool {

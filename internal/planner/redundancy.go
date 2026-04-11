@@ -468,6 +468,7 @@ func cloneDocument(doc *ir.Document) *ir.Document {
 			Kind:    op.Kind,
 			Mode:    op.Mode,
 			Impl:    op.Impl,
+			Runtime: cloneRuntimeSpec(op.Runtime),
 			Inputs:  append([]ir.StreamRef(nil), op.Inputs...),
 			Outputs: append([]ir.StreamRef(nil), op.Outputs...),
 			Config:  cloneMap(op.Config),
@@ -552,6 +553,28 @@ func cloneTask(task ir.TaskSpec) ir.TaskSpec {
 		Objective:         task.Objective,
 		Selectors:         append([]ir.SelectorTask(nil), task.Selectors...),
 	}
+}
+
+func cloneRuntimeSpec(spec ir.RuntimeSpec) ir.RuntimeSpec {
+	cloned := ir.RuntimeSpec{
+		Kind:     spec.Kind,
+		Image:    spec.Image,
+		Endpoint: spec.Endpoint,
+		WorkDir:  spec.WorkDir,
+	}
+	if len(spec.Command) > 0 {
+		cloned.Command = append([]string(nil), spec.Command...)
+	}
+	if len(spec.Args) > 0 {
+		cloned.Args = append([]string(nil), spec.Args...)
+	}
+	if len(spec.Env) > 0 {
+		cloned.Env = make(map[string]string, len(spec.Env))
+		for key, value := range spec.Env {
+			cloned.Env[key] = value
+		}
+	}
+	return cloned
 }
 
 func cloneTaskVariants(tasks []ir.TaskSpec) []ir.TaskSpec {
