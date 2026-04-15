@@ -37,6 +37,7 @@ func RegisterAll(registry *rt.Registry) error {
 		{impl: "selector.redundant_choice", factory: newRedundantChoiceSelector},
 		{impl: "selector.priority_failover", factory: newPrioritySelector},
 		{impl: "output.console", factory: newConsoleSink},
+		{impl: "frontend.web", factory: newFrontendSink},
 	}
 
 	for _, registration := range registrations {

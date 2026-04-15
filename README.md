@@ -6,10 +6,15 @@ IR теперь разделяет:
 - `model.operations[]` и `model.streams[]`: вычислительную модель
 - `task.*`: постановку задачи на этой модели
 
-Проект уже поддерживает три основных сценария:
-- `examples/presence.yaml`: полностью mock pipeline для presence detection
-- `examples/presence_v2.yaml`: pipeline с реальным микрофоном и клавиатурой
-- `examples/presence_redundant_v2.yaml`: redundant pipeline, где задача отдельно задаёт требования и planner сам выбирает маршрут. Этот же пример демонстрирует смешанный polyglot-stack: Go-операции для микрофона и клавиатуры, Python-subprocess для камеры и компьютерного зрения.
+Каждый пример в `examples/` хранится в виде директории с двумя файлами:
+- `presence.yaml` — вычислительная модель (operations + streams)
+- `task.yaml` — набор постановок задачи (`task_variants`): доступные входы, требуемые выходы, профили операций, `constraints` и `objective`
+
+Такое разделение позволяет фиксировать модель предметной области отдельно от того, какую именно задачу на ней решают. Loader автоматически объединяет все `*.yaml` в директории в один документ.
+
+Флагом `-ir` CLI принимает либо путь к директории примера (новая схема), либо путь к одиночному YAML-файлу (обратная совместимость).
+
+Основной пример — `examples/presence/`: redundant pipeline, где задача отдельно задаёт требования, а planner сам выбирает маршрут. Он же демонстрирует смешанный polyglot-stack: Go-операции для микрофона и клавиатуры, Python-subprocess для камеры и компьютерного зрения.
 
 Подробная архитектура компонентов вынесена в `docs/runtime-components.md`, а polyglot-контракт — в `docs/operation-interface.md`.
 
@@ -33,7 +38,8 @@ internal/graph/                     # построение producer/consumer gra
 internal/runtime/                   # engine, store, bus, registry, logger
 internal/runtime/ops/               # inproc_go impl операций
 internal/runtime/drivers/           # runtime-драйверы: subprocess (NDJSON), задел под docker/grpc/http
-examples/                           # примеры IR
+examples/                           # примеры IR (каждый пример — отдельная директория)
+examples/presence/                  # redundant polyglot-пример: presence.yaml + task.yaml
 examples/ops/                       # polyglot-реализации операций (Python)
 docs/runtime-components.md          # подробная архитектура компонентов
 docs/operation-interface.md         # контракт polyglot-операции (RunRequest / RunResult)
@@ -244,47 +250,14 @@ encoding) описан в `docs/operation-interface.md`. Справочная р
 
 `sink` не производит outputs, а завершает цепочку.
 
-Пример:
-- `output.console`
+Примеры:
+- `output.console` — печатает последнее значение stream в лог
+- `frontend.web` — запускает HTTP-сервер (SSE) и стримит состояние pipeline
+  в браузер (camera, audio RMS, presence-индикатор)
 
-`sink` обычно срабатывает в `task_per_event` режиме и печатает последнее значение в лог.
-
-## Пример 1: mock presence pipeline
-
-`examples/presence.yaml` содержит полностью mock-граф:
-
-- `webcam_source -> video_frame`
-- `microphone_source -> audio_chunk`
-- `face_presence(video_frame) -> face_presence`
-- `motion_presence(video_frame) -> motion_presence`
-- `voice_presence(audio_chunk) -> voice_presence`
-- `presence_selector(face_presence, motion_presence, voice_presence) -> presence_decision`
-- `decision_sink(presence_decision)`
-
-Это пример для проверки IR, графа и runtime без реальных устройств.
-
-## Пример 2: real presence_v2
-
-`examples/presence_v2.yaml` сочетает реальный микрофон и клавиатуру.
-
-### Логика графа
-
-- `microphone_source` через `microphone.capture` пишет в `audio_chunk`
-- `volume_presence` вычисляет `audio_presence` по RMS громкости
-- `keyboard_source` через `keyboard.read` пишет `pressed_key`
-- `presence_selector` через `selector.audio_or_recent_key` выдаёт `presence_decision`
-- `presence_sink` печатает `presence_decision`
-- `keyboard_sink` печатает сами события клавиатуры
-
-### Когда `presence_decision = true`
-
-В `presence_v2` итоговое presence становится `true`, если выполняется хотя бы одно условие:
-- RMS аудио выше порога `threshold`
-- была клавиша за последние `keyboard_window_ms`
-
-Это даёт две независимые ветки влияния на итоговое presence:
-- звук
-- клавиатурная активность
+`sink` обычно срабатывает в `task_per_event` режиме и реагирует на каждое
+событие любого из своих входных streams. `frontend.web` использует это,
+чтобы на каждый apдейт рассылать свежий snapshot подписанным HTTP-клиентам.
 
 ## Реальные реализации операций
 
@@ -374,9 +347,9 @@ Planner для требуемых `task.outputs`:
 - `presence_decision = false`
 - `default_choice`
 
-## Пример 3: redundant presence_v2
+## Пример: redundant presence
 
-`examples/presence_redundant_v2.yaml` показывает, как вычислительная модель отделяется от постановки задачи для доменного факта `presence`.
+`examples/presence/` показывает, как вычислительная модель отделяется от постановки задачи для доменного факта `presence`. Модель лежит в `examples/presence/presence.yaml`, набор `task_variants` — в `examples/presence/task.yaml`.
 
 ### Логика графа
 
@@ -422,33 +395,23 @@ Runtime использует `BeautifulLogger` с уровнями:
 Для подробной трассировки можно включить debug:
 
 ```bash
-go run ./cmd/runtime -ir ./examples/presence_v2.yaml -debug
+go run ./cmd/runtime -ir ./examples/presence -task low_cost_interactive -debug
 ```
 
 ## Запуск
 
-### Mock pipeline
+CLI принимает путь к директории примера через `-ir` и id постановки задачи через `-task`. Loader сам объединит `presence.yaml` + `task.yaml` в один документ.
+
+### Redundant presence (low cost)
 
 ```bash
-go run ./cmd/runtime -ir ./examples/presence.yaml
-```
-
-### Real presence_v2
-
-```bash
-go run ./cmd/runtime -ir ./examples/presence_v2.yaml -debug
-```
-
-### Redundant real presence_v2
-
-```bash
-go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task low_cost_interactive -debug
+go run ./cmd/runtime -ir ./examples/presence -task low_cost_interactive -debug
 ```
 
 Другой вариант постановки задачи:
 
 ```bash
-go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task high_confidence_monitoring -debug
+go run ./cmd/runtime -ir ./examples/presence -task high_confidence_monitoring -debug
 ```
 
 Если нужно зафиксировать конкретный микрофон:
@@ -465,8 +428,30 @@ config:
 
 ```bash
 pip install -r examples/ops/requirements.txt
-go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task camera_vision_accurate -debug
+go run ./cmd/runtime -ir ./examples/presence -task camera_vision_accurate -debug
 ```
+
+### Web UI (frontend.web sink)
+
+`frontend_full` поднимает простой HTTP-сервер и отдаёт в браузер камеру,
+audio RMS и индикатор presence. Это обычный sink (`impl: frontend.web`),
+который сам по себе слушает 127.0.0.1:8080 и стримит состояние через
+Server-Sent Events:
+
+```bash
+pip install -r examples/ops/requirements.txt
+go run ./cmd/runtime -ir ./examples/presence -task frontend_full -debug
+# далее открыть http://127.0.0.1:8080
+```
+
+UI отображает:
+- последний `camera_frame` (JPEG, base64-encoded) из Python subprocess
+- RMS звука по последнему `audio_chunk` из Go microphone источника
+- булевый индикатор `presence_decision` и текст `presence_strategy` от selector'а
+
+Frontend sink умеет работать и в урезанных task-вариантах: planner автоматически
+дропает из его inputs стримы, которые не вошли в выбранный план (например,
+если task не запрашивает камеру, sink останется, но без `camera_frame`).
 
 Go runtime запускает `examples/ops/camera_capture.py` и
 `examples/ops/face_presence.py` как долгоживущие subprocess-ы и общается
@@ -495,6 +480,6 @@ Go runtime запускает `examples/ops/camera_capture.py` и
 ## Что читать дальше
 
 - общее устройство компонентов: `docs/runtime-components.md`
-- пример реального графа: `examples/presence_v2.yaml`
-- пример выбора между избыточными вариантами: `examples/presence_redundant_v2.yaml`
+- пример выбора между избыточными вариантами: `examples/presence/` (`presence.yaml` + `task.yaml`)
+- polyglot-контракт операций: `docs/operation-interface.md`
 - entrypoint runtime: `cmd/runtime/main.go`

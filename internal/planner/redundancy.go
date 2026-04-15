@@ -416,25 +416,32 @@ func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string) *
 
 	for _, op := range doc.Operations {
 		if op.Kind == ir.OperationKindSink {
+			keep := false
 			if len(requiredOutputSet) > 0 {
 				for _, input := range op.Inputs {
 					if _, exists := requiredOutputSet[input.Stream]; exists {
-						pruned.Operations = append(pruned.Operations, op)
+						keep = true
 						break
 					}
 				}
 			} else {
-				keep := false
 				for _, input := range op.Inputs {
 					if _, exists := requiredStreams[input.Stream]; exists {
 						keep = true
 						break
 					}
 				}
-				if keep {
-					pruned.Operations = append(pruned.Operations, op)
-				}
 			}
+			if !keep {
+				continue
+			}
+
+			// Если sink подписан на несколько streams, а часть из них
+			// выброшена из плана (их producer не выбран), оставляем только
+			// те inputs, которые реально остаются в документе. Это позволяет
+			// переиспользовать один sink (например, frontend.web) в задачах
+			// разной полноты без правки yaml.
+			pruned.Operations = append(pruned.Operations, filterSinkInputs(op, requiredStreams))
 			continue
 		}
 		if _, exists := requiredOps[op.ID]; exists {
@@ -452,6 +459,17 @@ func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string) *
 	}
 
 	return pruned
+}
+
+func filterSinkInputs(op ir.Operation, keepStreams map[string]struct{}) ir.Operation {
+	filtered := make([]ir.StreamRef, 0, len(op.Inputs))
+	for _, input := range op.Inputs {
+		if _, exists := keepStreams[input.Stream]; exists {
+			filtered = append(filtered, input)
+		}
+	}
+	op.Inputs = filtered
+	return op
 }
 
 func cloneDocument(doc *ir.Document) *ir.Document {

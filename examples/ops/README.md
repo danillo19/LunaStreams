@@ -19,7 +19,7 @@ Rust или удалённым HTTP/gRPC-сервисом. При этом IR (`
 | `camera_capture.py`  | `camera.capture`    | Source: читает кадр с камеры, кодирует в JPEG         |
 | `face_presence.py`   | `cv.face_presence`  | Transform: JPEG → bool (есть ли лицо, Haar cascade)   |
 
-Обе операции используются в `examples/presence_redundant_v2.yaml` вместе
+Обе операции используются в `examples/presence/presence.yaml` вместе
 с Go-операциями `microphone.capture`, `audio.volume_presence` и
 `keyboard.read`.
 
@@ -34,7 +34,7 @@ pip install -r examples/ops/requirements.txt
 ## Запуск
 
 ```bash
-go run ./cmd/runtime -ir ./examples/presence_redundant_v2.yaml -task camera_vision_accurate
+go run ./cmd/runtime -ir ./examples/presence -task camera_vision_accurate
 ```
 
 ## Как добавить свою реализацию

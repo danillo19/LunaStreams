@@ -10,15 +10,41 @@ import (
 	"LunaStreams/internal/runtime/ops"
 )
 
-func TestPresenceRedundantV2ValidatesAndBuilds(t *testing.T) {
+const presenceExampleDir = "presence"
+
+func TestPresenceExampleLoadsFromDirectoryWithModelAndTask(t *testing.T) {
+	doc, err := ir.Load(presenceExampleDir)
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v", presenceExampleDir, err)
+	}
+
+	if len(doc.Model.Operations) == 0 {
+		t.Fatalf("model.operations is empty; model file was not merged")
+	}
+	if len(doc.TaskVariants) == 0 {
+		t.Fatalf("task_variants is empty; task file was not merged")
+	}
+
+	variantIDs := make(map[string]struct{}, len(doc.TaskVariants))
+	for _, variant := range doc.TaskVariants {
+		variantIDs[variant.ID] = struct{}{}
+	}
+	for _, expected := range []string{"low_cost_interactive", "camera_vision_accurate", "audio_only_fast"} {
+		if _, ok := variantIDs[expected]; !ok {
+			t.Fatalf("expected task_variant %q to be merged from task.yaml; got %v", expected, variantIDs)
+		}
+	}
+}
+
+func TestPresenceLowCostInteractiveValidatesAndBuilds(t *testing.T) {
 	registry := rt.NewRegistry()
 	if err := ops.RegisterAll(registry); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
 
-	doc, err := ir.Load("presence_redundant_v2.yaml")
+	doc, err := ir.Load(presenceExampleDir)
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("Load(%q) error = %v", presenceExampleDir, err)
 	}
 	if err := ir.ResolveTask(doc, "low_cost_interactive"); err != nil {
 		t.Fatalf("ResolveTask() error = %v", err)
@@ -56,15 +82,15 @@ func TestPresenceRedundantV2ValidatesAndBuilds(t *testing.T) {
 	_ = dependencyGraph
 }
 
-func TestPresenceRedundantV2CameraVisionTaskRoutesThroughPythonFaceOp(t *testing.T) {
+func TestPresenceCameraVisionTaskRoutesThroughPythonFaceOp(t *testing.T) {
 	registry := rt.NewRegistry()
 	if err := ops.RegisterAll(registry); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
 
-	doc, err := ir.Load("presence_redundant_v2.yaml")
+	doc, err := ir.Load(presenceExampleDir)
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("Load(%q) error = %v", presenceExampleDir, err)
 	}
 	if err := ir.ResolveTask(doc, "camera_vision_accurate"); err != nil {
 		t.Fatalf("ResolveTask() error = %v", err)
@@ -99,15 +125,97 @@ func TestPresenceRedundantV2CameraVisionTaskRoutesThroughPythonFaceOp(t *testing
 	}
 }
 
-func TestPresenceRedundantV2HighConfidenceTaskChoosesDifferentPlan(t *testing.T) {
+func TestPresenceFrontendTaskKeepsCameraAudioAndWebSink(t *testing.T) {
 	registry := rt.NewRegistry()
 	if err := ops.RegisterAll(registry); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
 
-	doc, err := ir.Load("presence_redundant_v2.yaml")
+	doc, err := ir.Load(presenceExampleDir)
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("Load(%q) error = %v", presenceExampleDir, err)
+	}
+	if err := ir.ResolveTask(doc, "frontend_full"); err != nil {
+		t.Fatalf("ResolveTask() error = %v", err)
+	}
+
+	if err := ir.Validate(doc, registry); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	planResult, err := planner.CompileRedundantChoices(doc)
+	if err != nil {
+		t.Fatalf("CompileRedundantChoices() error = %v", err)
+	}
+	doc = planResult.Document
+
+	if err := ir.Validate(doc, registry); err != nil {
+		t.Fatalf("Validate(planned) error = %v", err)
+	}
+
+	for _, id := range []string{"camera_source", "microphone_source", "face_presence", "frontend_sink"} {
+		if !hasOperation(doc, id) {
+			t.Fatalf("planned document for frontend_full missing %q", id)
+		}
+	}
+
+	sink := findOperation(doc, "frontend_sink")
+	streams := make(map[string]struct{}, len(sink.Inputs))
+	for _, input := range sink.Inputs {
+		streams[input.Stream] = struct{}{}
+	}
+	for _, expected := range []string{"camera_frame", "audio_chunk", "presence_decision"} {
+		if _, ok := streams[expected]; !ok {
+			t.Fatalf("frontend_sink lost expected input %q; got %v", expected, streams)
+		}
+	}
+}
+
+func TestPresenceFrontendSinkDropsMissingInputsOnReducedPlan(t *testing.T) {
+	registry := rt.NewRegistry()
+	if err := ops.RegisterAll(registry); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
+	}
+
+	doc, err := ir.Load(presenceExampleDir)
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v", presenceExampleDir, err)
+	}
+	if err := ir.ResolveTask(doc, "audio_only_fast"); err != nil {
+		t.Fatalf("ResolveTask() error = %v", err)
+	}
+
+	planResult, err := planner.CompileRedundantChoices(doc)
+	if err != nil {
+		t.Fatalf("CompileRedundantChoices() error = %v", err)
+	}
+	doc = planResult.Document
+
+	if err := ir.Validate(doc, registry); err != nil {
+		t.Fatalf("Validate(planned) error = %v", err)
+	}
+
+	if hasOperation(doc, "camera_source") {
+		t.Fatalf("audio_only_fast should not require camera_source")
+	}
+
+	sink := findOperation(doc, "frontend_sink")
+	for _, input := range sink.Inputs {
+		if input.Stream == "camera_frame" {
+			t.Fatalf("frontend_sink still references pruned stream %q", input.Stream)
+		}
+	}
+}
+
+func TestPresenceHighConfidenceTaskChoosesDifferentPlan(t *testing.T) {
+	registry := rt.NewRegistry()
+	if err := ops.RegisterAll(registry); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
+	}
+
+	doc, err := ir.Load(presenceExampleDir)
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v", presenceExampleDir, err)
 	}
 	if err := ir.ResolveTask(doc, "high_confidence_monitoring"); err != nil {
 		t.Fatalf("ResolveTask() error = %v", err)

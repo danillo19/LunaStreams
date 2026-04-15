@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LunaStreams · presence</title>
+  <style>
+    :root {
+      --bg: #0e1014;
+      --panel: #181b22;
+      --fg: #e6e8ef;
+      --muted: #7a7f8c;
+      --accent: #4cc38a;
+      --accent-off: #3b4252;
+      --danger: #e06c75;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid #23262d;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 500; }
+    header .tag {
+      background: var(--accent-off);
+      color: var(--muted);
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      padding: 16px 24px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid #23262d;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .panel h2 {
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 12px 0;
+      font-weight: 500;
+    }
+    .camera-frame {
+      width: 100%;
+      background: #000;
+      border-radius: 8px;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
+      display: block;
+    }
+    .camera-meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      gap: 16px;
+    }
+    .presence-indicator {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 18px;
+      border-radius: 10px;
+      background: var(--accent-off);
+      transition: background 0.15s ease;
+    }
+    .presence-indicator.on { background: #1e4632; }
+    .presence-indicator.off { background: #3b4252; }
+    .presence-dot {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--muted);
+      box-shadow: 0 0 0 0 rgba(76, 195, 138, 0.5);
+      transition: background 0.15s ease, box-shadow 0.25s ease;
+    }
+    .presence-indicator.on .presence-dot {
+      background: var(--accent);
+      box-shadow: 0 0 0 6px rgba(76, 195, 138, 0.2);
+    }
+    .presence-state {
+      font-size: 18px; font-weight: 600;
+    }
+    .presence-strategy {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+    .audio-meter {
+      position: relative;
+      height: 10px;
+      background: var(--accent-off);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .audio-fill {
+      position: absolute; top: 0; bottom: 0; left: 0;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--danger));
+      transition: width 0.08s linear;
+    }
+    .audio-meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+    }
+    footer {
+      padding: 12px 24px;
+      color: var(--muted);
+      font-size: 12px;
+      border-top: 1px solid #23262d;
+    }
+    .pill {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: var(--accent-off);
+      color: var(--muted);
+    }
+    .pill.live { background: #1e4632; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LunaStreams · presence monitor</h1>
+    <span class="tag">camera + audio + presence</span>
+    <span id="status" class="pill">connecting…</span>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Camera</h2>
+      <img id="camera" class="camera-frame" alt="no frame yet" />
+      <div class="camera-meta">
+        <span id="camera-size">—</span>
+        <span id="camera-seq">seq —</span>
+        <span id="camera-age">age —</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Presence</h2>
+      <div id="presence-indicator" class="presence-indicator off">
+        <div class="presence-dot"></div>
+        <div class="presence-state" id="presence-state">unknown</div>
+      </div>
+      <div class="presence-strategy" id="presence-strategy">strategy: —</div>
+
+      <h2 style="margin-top: 20px;">Audio (RMS)</h2>
+      <div class="audio-meter"><div id="audio-fill" class="audio-fill"></div></div>
+      <div class="audio-meta">
+        <span id="audio-rms">rms —</span>
+        <span id="audio-seq">seq —</span>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    live updates via SSE at <code>/events</code>. static page served by
+    <code>frontend.web</code> sink operator.
+  </footer>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const cameraEl = document.getElementById("camera");
+    const cameraSize = document.getElementById("camera-size");
+    const cameraSeq = document.getElementById("camera-seq");
+    const cameraAge = document.getElementById("camera-age");
+    const presenceIndicator = document.getElementById("presence-indicator");
+    const presenceState = document.getElementById("presence-state");
+    const presenceStrategy = document.getElementById("presence-strategy");
+    const audioFill = document.getElementById("audio-fill");
+    const audioRms = document.getElementById("audio-rms");
+    const audioSeq = document.getElementById("audio-seq");
+
+    function connect() {
+      const source = new EventSource("/events");
+      source.addEventListener("open", () => {
+        statusEl.textContent = "live";
+        statusEl.classList.add("live");
+      });
+      source.addEventListener("error", () => {
+        statusEl.textContent = "reconnecting…";
+        statusEl.classList.remove("live");
+      });
+      source.addEventListener("message", (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          applyUpdate(data);
+        } catch (err) {
+          console.error("bad event", err, ev.data);
+        }
+      });
+    }
+
+    function applyUpdate(snapshot) {
+      if (snapshot.camera) {
+        const { jpeg_base64, width, height, seq, captured_unix_ms } = snapshot.camera;
+        if (jpeg_base64) {
+          cameraEl.src = "data:image/jpeg;base64," + jpeg_base64;
+        }
+        cameraSize.textContent = width && height ? `${width}×${height}` : "—";
+        cameraSeq.textContent = seq != null ? `seq ${seq}` : "seq —";
+        if (captured_unix_ms) {
+          const age = Date.now() - captured_unix_ms;
+          cameraAge.textContent = age >= 0 ? `age ${age}ms` : "age —";
+        } else {
+          cameraAge.textContent = "age —";
+        }
+      }
+
+      if (snapshot.audio) {
+        const { rms, seq } = snapshot.audio;
+        const normalized = Math.min(1, Math.max(0, rms || 0));
+        audioFill.style.width = `${normalized * 100}%`;
+        audioRms.textContent = rms != null ? `rms ${rms.toFixed(4)}` : "rms —";
+        audioSeq.textContent = seq != null ? `seq ${seq}` : "seq —";
+      }
+
+      if (snapshot.presence != null) {
+        const on = !!snapshot.presence;
+        presenceIndicator.classList.toggle("on", on);
+        presenceIndicator.classList.toggle("off", !on);
+        presenceState.textContent = on ? "present" : "absent";
+      }
+
+      if (snapshot.strategy != null) {
+        presenceStrategy.textContent = `strategy: ${snapshot.strategy || "—"}`;
+      }
+    }
+
+    connect();
+  </script>
+</body>
+</html>

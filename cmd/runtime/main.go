@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	irPath := flag.String("ir", "./examples/presence.yaml", "path to IR yaml")
+	irPath := flag.String("ir", "./examples/presence", "path to IR yaml file or example directory (presence.yaml + task.yaml)")
 	taskID := flag.String("task", "", "task id from task/task_variants")
 	debug := flag.Bool("debug", false, "enable debug logs")
 	flag.Parse()

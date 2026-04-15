@@ -1,0 +1,179 @@
+model:
+  operations:
+    # --- Go-операции: звук ------------------------------------------------
+    - id: microphone_source
+      kind: source
+      mode: always_on
+      impl: microphone.capture
+      outputs:
+        - stream: audio_chunk
+      config:
+        sample_rate: 16000
+        channels: 1
+        frames_per_chunk: 1024
+
+    - id: loud_audio_presence
+      kind: transform
+      mode: task_per_event
+      impl: audio.volume_presence
+      inputs:
+        - stream: audio_chunk
+      outputs:
+        - stream: loud_audio_presence
+      config:
+        threshold: 0.12
+
+    - id: soft_audio_presence
+      kind: transform
+      mode: task_per_event
+      impl: audio.volume_presence
+      inputs:
+        - stream: audio_chunk
+      outputs:
+        - stream: soft_audio_presence
+      config:
+        threshold: 0.04
+
+    # --- Go-операция: клавиатура ----------------------------------------
+    - id: keyboard_source
+      kind: source
+      mode: always_on
+      impl: keyboard.read
+      outputs:
+        - stream: pressed_key
+
+    # --- Python-операции: камера + компьютерное зрение ------------------
+    # Источник кадров реализован как Python subprocess. Go-runtime не
+    # зависит от Python — он запускает команду и общается с ней через
+    # stdin/stdout по контракту polyglot-operation (см. docs/operation-interface.md).
+    - id: camera_source
+      kind: source
+      mode: always_on
+      impl: camera.capture
+      runtime:
+        kind: subprocess
+        command:
+          - python3
+          - examples/ops/camera_capture.py
+      outputs:
+        - stream: camera_frame
+      config:
+        device_index: 0
+        jpeg_quality: 75
+        max_width: 640
+
+    # Детекция лица — тоже Python subprocess. Внутри: OpenCV + Haar cascade.
+    # При необходимости эту же операцию можно заменить на Docker, gRPC или
+    # внешний ML-сервис, поменяв только секцию runtime.
+    - id: face_presence
+      kind: transform
+      mode: task_per_event
+      impl: cv.face_presence
+      runtime:
+        kind: subprocess
+        command:
+          - python3
+          - examples/ops/face_presence.py
+      inputs:
+        - stream: camera_frame
+      outputs:
+        - stream: face_presence
+      config:
+        scale_factor: 1.2
+        min_neighbors: 5
+        min_face_px: 80
+
+    # --- Selector: сводит bool-и и keyboard активность в одно решение ---
+    - id: presence_choice_selector
+      kind: selector
+      mode: always_on
+      impl: selector.redundant_choice
+      inputs:
+        - stream: loud_audio_presence
+        - stream: soft_audio_presence
+        - stream: pressed_key
+        - stream: face_presence
+      outputs:
+        - stream: presence_decision
+        - stream: presence_strategy
+      config:
+        default_choice: plan_inactive
+        tick_ms: 100
+        variants:
+          - stream: loud_audio_presence
+            kind: bool
+            label: loud_audio
+
+          - stream: soft_audio_presence
+            kind: bool
+            label: soft_audio
+
+          - stream: pressed_key
+            kind: recent_key
+            label: recent_keyboard
+            window_ms: 1500
+
+          - stream: face_presence
+            kind: bool
+            label: face_vision
+
+    - id: presence_sink
+      kind: sink
+      mode: task_per_event
+      impl: output.console
+      inputs:
+        - stream: presence_decision
+
+    - id: strategy_sink
+      kind: sink
+      mode: task_per_event
+      impl: output.console
+      inputs:
+        - stream: presence_strategy
+
+    # --- Frontend sink: HTTP + Server-Sent Events -----------------------
+    # Реализован как Go-sink (impl: frontend.web), но для runtime это
+    # обычный sink. При желании его можно заменить на Node.js/Python
+    # subprocess (runtime.kind: subprocess) или на выделенный сервис
+    # (runtime.kind: http/grpc) — engine менять не нужно.
+    - id: frontend_sink
+      kind: sink
+      mode: task_per_event
+      impl: frontend.web
+      inputs:
+        - stream: camera_frame
+        - stream: audio_chunk
+        - stream: presence_decision
+        - stream: presence_strategy
+      config:
+        bind: 127.0.0.1
+        port: 8080
+        camera_stream: camera_frame
+        audio_stream: audio_chunk
+        presence_stream: presence_decision
+        strategy_stream: presence_strategy
+
+  streams:
+    - id: audio_chunk
+      type: audio_chunk
+
+    - id: loud_audio_presence
+      type: bool
+
+    - id: soft_audio_presence
+      type: bool
+
+    - id: pressed_key
+      type: text
+
+    - id: camera_frame
+      type: video_frame
+
+    - id: face_presence
+      type: bool
+
+    - id: presence_decision
+      type: bool
+
+    - id: presence_strategy
+      type: text
