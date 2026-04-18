@@ -95,13 +95,26 @@ func (s *realtimeMicrophoneSource) init(config map[string]any) error {
 	deviceConfig.Alsa.NoMMap = 1
 
 	var seq int
+	firstNonEmpty := make(chan struct{}, 1)
+	firstSignal := make(chan struct{}, 1)
 	callbacks := malgo.DeviceCallbacks{
 		Data: func(_, input []byte, _ uint32) {
 			if len(input) == 0 {
 				return
 			}
 
+			select {
+			case firstNonEmpty <- struct{}{}:
+			default:
+			}
+
 			chunk := decodeAudioChunk(input, &seq)
+			if chunkHasSignal(chunk) {
+				select {
+				case firstSignal <- struct{}{}:
+				default:
+				}
+			}
 			select {
 			case s.chunks <- chunk:
 			default:
@@ -116,14 +129,71 @@ func (s *realtimeMicrophoneSource) init(config map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("init microphone device: %w", err)
 	}
-	s.device = device
 
-	if err := s.device.Start(); err != nil {
+	if err := device.Start(); err != nil {
+		device.Uninit()
 		return fmt.Errorf("start microphone device: %w", err)
 	}
 
+	if !skipMicrophoneWarmup() {
+		wait := 1200 * time.Millisecond
+		if goRuntime.GOOS == "darwin" {
+			wait = 2800 * time.Millisecond
+		}
+		select {
+		case <-firstNonEmpty:
+		case <-time.After(wait):
+			_ = device.Stop()
+			device.Uninit()
+			return fmt.Errorf(
+				"microphone: timed out waiting for audio frames (only empty buffers). " +
+					"On macOS grant Microphone access to the app that started this process " +
+					"(Terminal.app, Cursor, Visual Studio Code, GoLand, etc.): " +
+					"System Settings → Privacy & Security → Microphone. " +
+					"If you use VS Code, run from an external terminal (see .vscode/launch.json) " +
+					"or set LUNASTREAMS_SKIP_MIC_WARMUP=1 to bypass this check (not recommended for real capture)",
+			)
+		}
+
+		select {
+		case <-firstSignal:
+		case <-time.After(wait):
+			_ = device.Stop()
+			device.Uninit()
+			return fmt.Errorf(
+				"microphone: received only silent/zero frames during startup. " +
+					"Likely no microphone permission, wrong input device, or muted hardware input. " +
+					"On macOS grant Microphone access to the host app (Terminal/Cursor/VS Code/GoLand), " +
+					"select an explicit device via task.operation_configs.microphone_source.config.device_name_contains, " +
+					"and rerun with -debug to inspect 'capture devices' log",
+			)
+		}
+	}
+
+	s.device = device
+
 	rt.DefaultLogger().Info(s.opID, "microphone capture active sample_rate=%d channels=%d frames_per_chunk=%d", sampleRate, channels, periodFrames)
 	return nil
+}
+
+func skipMicrophoneWarmup() bool {
+	switch os.Getenv("LUNASTREAMS_SKIP_MIC_WARMUP") {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return os.Getenv("GITHUB_ACTIONS") == "true"
+	}
+}
+
+func chunkHasSignal(chunk AudioChunk) bool {
+	// Для нормального микрофона даже в тишине обычно приходит ненулевой шум.
+	// Полностью нулевые буферы на старте часто означают проблему доступа.
+	for _, sample := range chunk.Samples {
+		if sample != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *realtimeMicrophoneSource) configureCaptureDevice(deviceNameFilter string) error {
@@ -146,21 +216,42 @@ func (s *realtimeMicrophoneSource) configureCaptureDevice(deviceNameFilter strin
 	}
 	rt.DefaultLogger().Info(s.opID, "capture devices: %s", strings.Join(names, ", "))
 
-	if deviceNameFilter == "" {
-		return nil
+	if s.deviceIDPtr != nil {
+		C.free(s.deviceIDPtr)
+		s.deviceIDPtr = nil
 	}
 
-	for _, device := range devices {
-		if !strings.Contains(strings.ToLower(device.Name()), deviceNameFilter) {
-			continue
+	if deviceNameFilter != "" {
+		for _, device := range devices {
+			if !strings.Contains(strings.ToLower(device.Name()), deviceNameFilter) {
+				continue
+			}
+
+			s.deviceIDPtr = device.ID.Pointer()
+			rt.DefaultLogger().Info(s.opID, "selected capture device %q by filter %q", device.Name(), deviceNameFilter)
+			return nil
 		}
 
-		s.deviceIDPtr = device.ID.Pointer()
-		rt.DefaultLogger().Info(s.opID, "selected capture device %q by filter %q", device.Name(), deviceNameFilter)
-		return nil
+		return fmt.Errorf("no capture device matched %q", deviceNameFilter)
 	}
 
-	return fmt.Errorf("no capture device matched %q", deviceNameFilter)
+	// Явно привязываемся к default capture device (на macOS надёжнее, чем
+	// неинициализированный DeviceID в конфиге).
+	var chosen malgo.DeviceInfo
+	var picked bool
+	for _, device := range devices {
+		if device.IsDefault != 0 {
+			chosen = device
+			picked = true
+			break
+		}
+	}
+	if !picked {
+		chosen = devices[0]
+	}
+	s.deviceIDPtr = chosen.ID.Pointer()
+	rt.DefaultLogger().Info(s.opID, "selected capture device %q (explicit default or first listed)", chosen.Name())
+	return nil
 }
 
 func (s *realtimeMicrophoneSource) Run(ctx context.Context, _ map[string]any) (map[string]any, error) {

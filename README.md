@@ -314,6 +314,15 @@ polyglot-операции на Python — в `ops/subprocess/python/`. Обща�
 Важно:
 - в sandbox среде доступ к аудио backend может не работать
 - для реальной работы лучше запускать в обычном терминале пользователя
+- на macOS разрешение «Микрофон» выдаётся **приложению-хосту**, которое
+  запустило процесс (Terminal.app, Cursor, Visual Studio Code, GoLand и т.д.),
+  а не бинарнику `runtime` отдельно. Встроенный терминал VS Code часто не
+  получает кадры с микрофона — используй конфигурацию
+  **LunaStreams runtime (external terminal)** из `.vscode/launch.json` или
+  запускай `go run ./cmd/runtime ...` из Terminal.app
+- для CI/автотестов без железа: `LUNASTREAMS_SKIP_MIC_WARMUP=1` отключает
+  ожидание первого непустого аудио-буфера при старте (для реального микрофона
+  не рекомендуется)
 
 ### `keyboard.read`
 

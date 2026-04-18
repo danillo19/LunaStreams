@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+import platform
 import sys
 import time
 from typing import Any
@@ -39,6 +40,15 @@ def log(message: str) -> None:
     sys.stderr.flush()
 
 
+def darwin_camera_hint() -> str:
+    return (
+        "On macOS: System Settings → Privacy & Security → Camera — enable access "
+        "for the app that started this process (Terminal, Cursor, VS Code, etc.). "
+        "VS Code often does not receive camera frames from the integrated terminal; "
+        "run the runtime from Terminal.app or use VS Code 'external terminal' launch (see repo .vscode/launch.json)."
+    )
+
+
 def read_config(request: dict[str, Any]) -> dict[str, Any]:
     return request.get("config") or {}
 
@@ -47,7 +57,10 @@ def open_capture(config: dict[str, Any]):
     device_index = int(config.get("device_index", 0))
     cap = cv2.VideoCapture(device_index)
     if not cap.isOpened():
-        raise RuntimeError(f"cannot open camera device {device_index}")
+        msg = f"cannot open camera device {device_index}"
+        if platform.system() == "Darwin":
+            msg += ". " + darwin_camera_hint()
+        raise RuntimeError(msg)
     return cap
 
 
@@ -116,7 +129,10 @@ def main() -> int:
             ok, frame = cap.read()
             retries += 1
         if not ok:
-            json.dump({"outputs": {}, "error": "camera read failed"}, sys.stdout)
+            err = "camera read failed"
+            if platform.system() == "Darwin":
+                err += " (" + darwin_camera_hint() + ")"
+            json.dump({"outputs": {}, "error": err}, sys.stdout)
             sys.stdout.write("\n")
             sys.stdout.flush()
             continue

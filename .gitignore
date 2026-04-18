@@ -2,7 +2,9 @@
 
 # IDE
 .idea/
-.vscode/
+# Локальные настройки VS Code не коммитим; launch.json нужен в репо (macOS + mic/camera).
+.vscode/*
+!.vscode/launch.json
 
 # Local Go caches used in this project
 .gomodcache/
@@ -30,6 +32,7 @@ cover.out
 *.log
 tmp/
 temp/
+.tmp/
 
 # Environment overrides
 .env

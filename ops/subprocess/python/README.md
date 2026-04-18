@@ -18,6 +18,7 @@ Rust или удалённым HTTP/gRPC-сервисом. При этом IR (`
 |----------------------|---------------------|-------------------------------------------------------|
 | `camera_capture.py`  | `camera.capture`    | Source: читает кадр с камеры, кодирует в JPEG         |
 | `face_presence.py`   | `cv.face_presence`  | Transform: JPEG → bool (есть ли лицо, Haar cascade)   |
+| `run_*.sh`           | launcher            | Обёртки: предпочитают `.venv/bin/python`, fallback на `python3` |
 
 Обе операции используются в `examples/presence/model.yaml` вместе
 с Go-операциями `microphone.capture`, `audio.volume_presence` и
@@ -48,9 +49,9 @@ go run ./cmd/runtime -ir ./examples/presence -task camera_vision_accurate
      kind: transform
      mode: task_per_event
      impl: my.operation
-     runtime:
-       kind: subprocess
-       command: [python3, ops/subprocess/python/my_op.py]
+    runtime:
+      kind: subprocess
+      command: [sh, ops/subprocess/python/run_my_op.sh]
      inputs:
        - stream: frame
      outputs:

@@ -120,8 +120,8 @@ func TestPresenceCameraVisionTaskRoutesThroughPythonFaceOp(t *testing.T) {
 	if face.Runtime.Kind != "subprocess" {
 		t.Fatalf("face_presence runtime.kind = %q, want subprocess", face.Runtime.Kind)
 	}
-	if len(face.Runtime.Command) < 2 || face.Runtime.Command[0] != "python3" {
-		t.Fatalf("face_presence runtime.command = %v, want python3 + script", face.Runtime.Command)
+	if len(face.Runtime.Command) < 2 || face.Runtime.Command[0] != "sh" {
+		t.Fatalf("face_presence runtime.command = %v, want sh + launcher script", face.Runtime.Command)
 	}
 }
 

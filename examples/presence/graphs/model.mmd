@@ -1,0 +1,51 @@
+%% Auto-generated: go run ./cmd/gen-graphs/
+%% presence — model (all operations)
+flowchart LR
+    st_audio_chunk["audio_chunk<br/>(audio_chunk)"]
+    st_camera_frame["camera_frame<br/>(video_frame)"]
+    st_face_presence["face_presence<br/>(bool)"]
+    st_loud_audio_presence["loud_audio_presence<br/>(bool)"]
+    st_presence_decision["presence_decision<br/>(bool)"]
+    st_presence_strategy["presence_strategy<br/>(text)"]
+    st_pressed_key["pressed_key<br/>(text)"]
+    st_soft_audio_presence["soft_audio_presence<br/>(bool)"]
+    op_camera_source["camera_source<br/>(source)"]
+    op_face_presence["face_presence<br/>(transform)"]
+    op_frontend_sink["frontend_sink<br/>(sink)"]
+    op_keyboard_source["keyboard_source<br/>(source)"]
+    op_loud_audio_presence["loud_audio_presence<br/>(transform)"]
+    op_microphone_source["microphone_source<br/>(source)"]
+    op_presence_choice_selector["presence_choice_selector<br/>(transform)"]
+    op_presence_sink["presence_sink<br/>(sink)"]
+    op_soft_audio_presence["soft_audio_presence<br/>(transform)"]
+    op_strategy_sink["strategy_sink<br/>(sink)"]
+    op_microphone_source --> st_audio_chunk
+    st_audio_chunk --> op_loud_audio_presence
+    op_loud_audio_presence --> st_loud_audio_presence
+    st_audio_chunk --> op_soft_audio_presence
+    op_soft_audio_presence --> st_soft_audio_presence
+    op_keyboard_source --> st_pressed_key
+    op_camera_source --> st_camera_frame
+    st_camera_frame --> op_face_presence
+    op_face_presence --> st_face_presence
+    st_loud_audio_presence --> op_presence_choice_selector
+    st_soft_audio_presence --> op_presence_choice_selector
+    st_pressed_key --> op_presence_choice_selector
+    st_face_presence --> op_presence_choice_selector
+    op_presence_choice_selector --> st_presence_decision
+    op_presence_choice_selector --> st_presence_strategy
+    st_presence_decision --> op_presence_sink
+    st_presence_strategy --> op_strategy_sink
+    st_camera_frame --> op_frontend_sink
+    st_audio_chunk --> op_frontend_sink
+    st_presence_decision --> op_frontend_sink
+    st_presence_strategy --> op_frontend_sink
+
+    classDef streamNode fill:#f6f0ff,stroke:#6b46c1,stroke-width:1px,color:#24124d;
+    classDef sourceOp fill:#e3f2fd,stroke:#1565c0,stroke-width:1px,color:#0d47a1;
+    classDef transformOp fill:#fff8e8,stroke:#b7791f,stroke-width:1px,color:#3b2a12;
+    classDef sinkOp fill:#fce4ec,stroke:#c2185b,stroke-width:1px,color:#880e4f;
+    class st_audio_chunk,st_camera_frame,st_face_presence,st_loud_audio_presence,st_presence_decision,st_presence_strategy,st_pressed_key,st_soft_audio_presence streamNode;
+    class op_camera_source,op_keyboard_source,op_microphone_source sourceOp;
+    class op_face_presence,op_loud_audio_presence,op_presence_choice_selector,op_soft_audio_presence transformOp;
+    class op_frontend_sink,op_presence_sink,op_strategy_sink sinkOp;

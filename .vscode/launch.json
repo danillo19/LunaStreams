@@ -1,0 +1,69 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "LunaStreams: low_cost_interactive (external terminal)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/runtime",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "-ir",
+        "${workspaceFolder}/examples/presence",
+        "-task",
+        "low_cost_interactive",
+        "-debug"
+      ],
+      "console": "externalTerminal"
+    },
+    {
+      "name": "LunaStreams: audio_only_fast (external terminal)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/runtime",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "-ir",
+        "${workspaceFolder}/examples/presence",
+        "-task",
+        "audio_only_fast",
+        "-debug"
+      ],
+      "console": "externalTerminal"
+    },
+    {
+      "name": "LunaStreams: frontend_full (external terminal)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/runtime",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "-ir",
+        "${workspaceFolder}/examples/presence",
+        "-task",
+        "frontend_full",
+        "-debug"
+      ],
+      "console": "externalTerminal"
+    },
+    {
+      "name": "LunaStreams: camera_vision_accurate (external terminal)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/runtime",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "-ir",
+        "${workspaceFolder}/examples/presence",
+        "-task",
+        "camera_vision_accurate",
+        "-debug"
+      ],
+      "console": "externalTerminal"
+    }
+  ]
+}
