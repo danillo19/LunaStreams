@@ -1,9 +1,9 @@
-# Polyglot operations for LunaStreams
+# Python polyglot operations for LunaStreams
 
-Эта директория содержит операции, реализованные **не на Go**. Они
-запускаются Go runtime через subprocess-драйвер по контракту из
-[`docs/operation-interface.md`](../../docs/operation-interface.md): один
-RunRequest в stdin — один RunResult в stdout, все payload-ы идут в
+Эта директория содержит операции, реализованные на **Python**. Они
+запускаются Go runtime через subprocess-драйвер (`ops/subprocess`) по
+контракту из [`docs/operation-interface.md`](../../../docs/operation-interface.md):
+один RunRequest в stdin — один RunResult в stdout, все payload-ы идут в
 base64+JSON.
 
 Цель — показать, что любую операцию LunaStreams можно подменить
@@ -19,7 +19,7 @@ Rust или удалённым HTTP/gRPC-сервисом. При этом IR (`
 | `camera_capture.py`  | `camera.capture`    | Source: читает кадр с камеры, кодирует в JPEG         |
 | `face_presence.py`   | `cv.face_presence`  | Transform: JPEG → bool (есть ли лицо, Haar cascade)   |
 
-Обе операции используются в `examples/presence/presence.yaml` вместе
+Обе операции используются в `examples/presence/model.yaml` вместе
 с Go-операциями `microphone.capture`, `audio.volume_presence` и
 `keyboard.read`.
 
@@ -28,7 +28,7 @@ Rust или удалённым HTTP/gRPC-сервисом. При этом IR (`
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r examples/ops/requirements.txt
+pip install -r ops/subprocess/python/requirements.txt
 ```
 
 ## Запуск
@@ -50,7 +50,7 @@ go run ./cmd/runtime -ir ./examples/presence -task camera_vision_accurate
      impl: my.operation
      runtime:
        kind: subprocess
-       command: [python3, examples/ops/my_op.py]
+       command: [python3, ops/subprocess/python/my_op.py]
      inputs:
        - stream: frame
      outputs:

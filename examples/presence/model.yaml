@@ -1,16 +1,11 @@
 model:
   operations:
-    # --- Go-операции: звук ------------------------------------------------
     - id: microphone_source
       kind: source
       mode: always_on
       impl: microphone.capture
       outputs:
         - stream: audio_chunk
-      config:
-        sample_rate: 16000
-        channels: 1
-        frames_per_chunk: 1024
 
     - id: loud_audio_presence
       kind: transform
@@ -20,8 +15,6 @@ model:
         - stream: audio_chunk
       outputs:
         - stream: loud_audio_presence
-      config:
-        threshold: 0.12
 
     - id: soft_audio_presence
       kind: transform
@@ -31,10 +24,7 @@ model:
         - stream: audio_chunk
       outputs:
         - stream: soft_audio_presence
-      config:
-        threshold: 0.04
 
-    # --- Go-операция: клавиатура ----------------------------------------
     - id: keyboard_source
       kind: source
       mode: always_on
@@ -54,17 +44,11 @@ model:
         kind: subprocess
         command:
           - python3
-          - examples/ops/camera_capture.py
+          - ops/subprocess/python/camera_capture.py
       outputs:
         - stream: camera_frame
-      config:
-        device_index: 0
-        jpeg_quality: 75
-        max_width: 640
 
-    # Детекция лица — тоже Python subprocess. Внутри: OpenCV + Haar cascade.
-    # При необходимости эту же операцию можно заменить на Docker, gRPC или
-    # внешний ML-сервис, поменяв только секцию runtime.
+    # Детекция лица — Python subprocess. OpenCV + Haar cascade.
     - id: face_presence
       kind: transform
       mode: task_per_event
@@ -73,19 +57,17 @@ model:
         kind: subprocess
         command:
           - python3
-          - examples/ops/face_presence.py
+          - ops/subprocess/python/face_presence.py
       inputs:
         - stream: camera_frame
       outputs:
         - stream: face_presence
-      config:
-        scale_factor: 1.2
-        min_neighbors: 5
-        min_face_px: 80
 
-    # --- Selector: сводит bool-и и keyboard активность в одно решение ---
+    # --- Aggregator: сводит несколько источников сигналов в одно решение ---
+    # Список возможных входов (inputs) — структурная часть модели.
+    # Набор variants и пороги приходят из конкретной задачи.
     - id: presence_choice_selector
-      kind: selector
+      kind: transform
       mode: always_on
       impl: selector.redundant_choice
       inputs:
@@ -96,26 +78,6 @@ model:
       outputs:
         - stream: presence_decision
         - stream: presence_strategy
-      config:
-        default_choice: plan_inactive
-        tick_ms: 100
-        variants:
-          - stream: loud_audio_presence
-            kind: bool
-            label: loud_audio
-
-          - stream: soft_audio_presence
-            kind: bool
-            label: soft_audio
-
-          - stream: pressed_key
-            kind: recent_key
-            label: recent_keyboard
-            window_ms: 1500
-
-          - stream: face_presence
-            kind: bool
-            label: face_vision
 
     - id: presence_sink
       kind: sink
@@ -145,13 +107,6 @@ model:
         - stream: audio_chunk
         - stream: presence_decision
         - stream: presence_strategy
-      config:
-        bind: 127.0.0.1
-        port: 8080
-        camera_stream: camera_frame
-        audio_stream: audio_chunk
-        presence_stream: presence_decision
-        strategy_stream: presence_strategy
 
   streams:
     - id: audio_chunk

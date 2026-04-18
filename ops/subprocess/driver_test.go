@@ -1,4 +1,4 @@
-package drivers
+package subprocess
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func TestSubprocessDriverRoundTripJSON(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 
-	driver := NewSubprocessDriver(nil)
+	driver := NewDriver(nil)
 	operator, err := driver.Create(ir.Operation{
 		ID:   "echo_op",
 		Kind: ir.OperationKindTransform,
@@ -36,9 +36,9 @@ func TestSubprocessDriverRoundTripJSON(t *testing.T) {
 			Kind:    "subprocess",
 			Command: []string{"sh", script},
 		},
-		Inputs: []ir.StreamRef{{Stream: "in"}},
+		Inputs:  []ir.StreamRef{{Stream: "in"}},
 		Outputs: []ir.StreamRef{{Stream: "out"}},
-		Config: map[string]any{"greeting": "hello"},
+		Config:  map[string]any{"greeting": "hello"},
 	})
 	if err != nil {
 		t.Fatalf("driver.Create() error = %v", err)

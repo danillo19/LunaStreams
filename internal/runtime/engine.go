@@ -130,13 +130,20 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.logger.Info("engine", "dispatcher started")
 
 	for _, op := range e.doc.Operations {
+		if op.Mode != ir.OperationModeAlwaysOn {
+			continue
+		}
+		if op.Kind == ir.OperationKindSink {
+			continue
+		}
+
 		switch {
-		case op.Kind == ir.OperationKindSource && op.Mode == ir.OperationModeAlwaysOn:
-			e.logger.Info("engine", "starting source %s (%s)", op.ID, op.Impl)
+		case op.Kind == ir.OperationKindSource && len(op.Inputs) == 0:
+			e.logger.Info("engine", "starting always_on source %s (%s)", op.ID, op.Impl)
 			go e.runAlwaysOnSource(ctx, op)
-		case op.Kind == ir.OperationKindSelector && op.Mode == ir.OperationModeAlwaysOn:
-			e.logger.Info("engine", "starting selector %s (%s)", op.ID, op.Impl)
-			go e.runAlwaysOnSelector(ctx, op)
+		default:
+			e.logger.Info("engine", "starting always_on op %s (%s)", op.ID, op.Impl)
+			go e.runAlwaysOnOp(ctx, op)
 		}
 	}
 
@@ -206,9 +213,9 @@ func (e *Engine) runAlwaysOnSource(ctx context.Context, op ir.Operation) {
 	}
 }
 
-func (e *Engine) runAlwaysOnSelector(ctx context.Context, op ir.Operation) {
+func (e *Engine) runAlwaysOnOp(ctx context.Context, op ir.Operation) {
 	operator := e.operators[op.ID]
-	ticker := time.NewTicker(selectorTick(op.Config))
+	ticker := time.NewTicker(operationTick(op.Config))
 	defer ticker.Stop()
 
 	for {
@@ -216,28 +223,18 @@ func (e *Engine) runAlwaysOnSelector(ctx context.Context, op ir.Operation) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			inputs := make(map[string]any, len(op.Inputs))
-			for _, input := range op.Inputs {
-				value, _, ok := e.store.Get(input.Stream)
-				if !ok {
-					inputs[input.Stream] = false
-					continue
-				}
-
-				inputs[input.Stream] = value
-			}
-
-			e.logger.Debug(op.ID, "selector tick inputs=%s", describeInputs(inputs))
+			inputs := e.loadInputs(op)
+			e.logger.Debug(op.ID, "always_on tick inputs=%s", describeInputs(inputs))
 			outputs, err := operator.Run(ctx, inputs)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				e.logger.Error(op.ID, "selector failed: %v", err)
+				e.logger.Error(op.ID, "always_on operation failed: %v", err)
 				continue
 			}
 
-			e.logger.Debug(op.ID, "selector outputs=%s", describeOutputs(outputs))
+			e.logger.Debug(op.ID, "always_on outputs=%s", describeOutputs(outputs))
 			if err := e.persistOutputs(ctx, op, outputs); err != nil && ctx.Err() == nil {
 				e.logger.Error(op.ID, "publish failed: %v", err)
 			}
@@ -260,14 +257,7 @@ func (e *Engine) runTaskOp(ctx context.Context, op ir.Operation) {
 		<-sem
 	}()
 
-	inputs := make(map[string]any, len(op.Inputs))
-	for _, input := range op.Inputs {
-		value, _, ok := e.store.Get(input.Stream)
-		if ok {
-			inputs[input.Stream] = value
-		}
-	}
-
+	inputs := e.loadInputs(op)
 	e.logger.Debug(op.ID, "run inputs=%s", describeInputs(inputs))
 	outputs, err := e.operators[op.ID].Run(ctx, inputs)
 	if err != nil {
@@ -310,7 +300,18 @@ func (e *Engine) persistOutputs(ctx context.Context, op ir.Operation, outputs ma
 	return nil
 }
 
-func selectorTick(config map[string]any) time.Duration {
+func (e *Engine) loadInputs(op ir.Operation) map[string]any {
+	inputs := make(map[string]any, len(op.Inputs))
+	for _, input := range op.Inputs {
+		value, _, ok := e.store.Get(input.Stream)
+		if ok {
+			inputs[input.Stream] = value
+		}
+	}
+	return inputs
+}
+
+func operationTick(config map[string]any) time.Duration {
 	if config == nil {
 		return 100 * time.Millisecond
 	}

@@ -1,0 +1,67 @@
+# Веб-интерфейс: микрофон + камера + presence. task.outputs описывают
+# только нужные domain-streams и целевой sink. Источники
+# camera_frame/audio_chunk подтягиваются автоматически через inputs
+# frontend_sink (opt-in по sink-записи в outputs).
+task:
+  id: frontend_full
+  inputs:
+    - stream: audio_chunk
+    - stream: camera_frame
+  outputs:
+    - stream: presence_decision
+    - stream: presence_strategy
+    - sink: frontend_sink
+
+  operation_profiles:
+    - operation: soft_audio_presence
+      cost: 1
+      weight: 0.45
+      latency_ms: 8
+    - operation: face_presence
+      cost: 15
+      weight: 0.98
+      latency_ms: 60
+  operation_configs:
+    - operation: microphone_source
+      config:
+        sample_rate: 16000
+        channels: 1
+        frames_per_chunk: 1024
+    - operation: soft_audio_presence
+      config:
+        threshold: 0.04
+    - operation: camera_source
+      config:
+        device_index: 0
+        jpeg_quality: 75
+        max_width: 640
+    - operation: face_presence
+      config:
+        scale_factor: 1.2
+        min_neighbors: 5
+        min_face_px: 80
+    - operation: presence_choice_selector
+      config:
+        default_choice: plan_inactive
+        tick_ms: 100
+        variants:
+          - stream: soft_audio_presence
+            kind: bool
+            label: soft_audio
+          - stream: face_presence
+            kind: bool
+            label: face_vision
+    - operation: frontend_sink
+      config:
+        bind: 127.0.0.1
+        port: 8080
+        camera_stream: camera_frame
+        audio_stream: audio_chunk
+        presence_stream: presence_decision
+        strategy_stream: presence_strategy
+  constraints:
+    min_total_weight: 0.95
+    max_total_latency_ms: 80
+  objective:
+    primary: max_weight
+    secondary: min_cost

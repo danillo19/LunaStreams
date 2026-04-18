@@ -1,4 +1,4 @@
-package ops
+package inprocgo
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 
 	"LunaStreams/internal/ir"
 	rt "LunaStreams/internal/runtime"
-	"LunaStreams/internal/runtime/drivers"
 )
 
 type Frame struct {
@@ -20,7 +19,11 @@ type AudioChunk struct {
 	RMS     float64
 }
 
-func RegisterAll(registry *rt.Registry) error {
+// Register регистрирует все inproc_go-фабрики операций в общем Registry.
+// Этот пакет отвечает только за Go-native реализации; драйверы других
+// сред исполнения подключаются из своих собственных пакетов (например,
+// LunaStreams/ops/subprocess).
+func Register(registry *rt.Registry) error {
 	registrations := []struct {
 		impl    string
 		factory rt.Factory
@@ -44,10 +47,6 @@ func RegisterAll(registry *rt.Registry) error {
 		if err := registry.Register(registration.impl, registration.factory); err != nil {
 			return err
 		}
-	}
-
-	if err := registry.RegisterDriver("subprocess", drivers.NewSubprocessDriver(rt.DefaultLogger())); err != nil {
-		return err
 	}
 
 	return nil

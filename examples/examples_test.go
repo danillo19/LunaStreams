@@ -7,7 +7,7 @@ import (
 	"LunaStreams/internal/ir"
 	"LunaStreams/internal/planner"
 	rt "LunaStreams/internal/runtime"
-	"LunaStreams/internal/runtime/ops"
+	"LunaStreams/ops"
 )
 
 const presenceExampleDir = "presence"
@@ -31,7 +31,7 @@ func TestPresenceExampleLoadsFromDirectoryWithModelAndTask(t *testing.T) {
 	}
 	for _, expected := range []string{"low_cost_interactive", "camera_vision_accurate", "audio_only_fast"} {
 		if _, ok := variantIDs[expected]; !ok {
-			t.Fatalf("expected task_variant %q to be merged from task.yaml; got %v", expected, variantIDs)
+			t.Fatalf("expected task_variant %q to be merged from task_*.yaml; got %v", expected, variantIDs)
 		}
 	}
 }
@@ -158,20 +158,30 @@ func TestPresenceFrontendTaskKeepsCameraAudioAndWebSink(t *testing.T) {
 			t.Fatalf("planned document for frontend_full missing %q", id)
 		}
 	}
+	// frontend_full не объявляет console-sinks в task.outputs[].sink,
+	// значит planner должен их отбросить — иначе opt-in теряет смысл.
+	for _, id := range []string{"presence_sink", "strategy_sink"} {
+		if hasOperation(doc, id) {
+			t.Fatalf("frontend_full must not keep console sink %q (not listed in task.outputs[].sink)", id)
+		}
+	}
 
 	sink := findOperation(doc, "frontend_sink")
 	streams := make(map[string]struct{}, len(sink.Inputs))
 	for _, input := range sink.Inputs {
 		streams[input.Stream] = struct{}{}
 	}
-	for _, expected := range []string{"camera_frame", "audio_chunk", "presence_decision"} {
+	for _, expected := range []string{"camera_frame", "audio_chunk", "presence_decision", "presence_strategy"} {
 		if _, ok := streams[expected]; !ok {
 			t.Fatalf("frontend_sink lost expected input %q; got %v", expected, streams)
 		}
 	}
 }
 
-func TestPresenceFrontendSinkDropsMissingInputsOnReducedPlan(t *testing.T) {
+// Задачи без frontend_sink в task.outputs[].sink не должны запускать
+// HTTP-сервер. Проверяем, что в плане остаются только явно указанные
+// sink-и и что camera_source не подтягивается через inputs чужого sink-а.
+func TestPresenceAudioOnlyFastExcludesFrontendSink(t *testing.T) {
 	registry := rt.NewRegistry()
 	if err := ops.RegisterAll(registry); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
@@ -195,14 +205,15 @@ func TestPresenceFrontendSinkDropsMissingInputsOnReducedPlan(t *testing.T) {
 		t.Fatalf("Validate(planned) error = %v", err)
 	}
 
+	if hasOperation(doc, "frontend_sink") {
+		t.Fatalf("audio_only_fast must not keep frontend_sink (not listed in task.outputs[].sink)")
+	}
 	if hasOperation(doc, "camera_source") {
 		t.Fatalf("audio_only_fast should not require camera_source")
 	}
-
-	sink := findOperation(doc, "frontend_sink")
-	for _, input := range sink.Inputs {
-		if input.Stream == "camera_frame" {
-			t.Fatalf("frontend_sink still references pruned stream %q", input.Stream)
+	for _, id := range []string{"presence_sink", "strategy_sink"} {
+		if !hasOperation(doc, id) {
+			t.Fatalf("audio_only_fast must keep sink %q listed in task.outputs[].sink", id)
 		}
 	}
 }
@@ -236,6 +247,53 @@ func TestPresenceHighConfidenceTaskChoosesDifferentPlan(t *testing.T) {
 	}
 	if hasOperation(doc, "soft_audio_presence") || hasOperation(doc, "keyboard_source") {
 		t.Fatalf("planned document retained low-confidence alternatives")
+	}
+}
+
+func TestPresenceTaskAppliesOperationConfigsToModel(t *testing.T) {
+	doc, err := ir.Load(presenceExampleDir)
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v", presenceExampleDir, err)
+	}
+
+	for _, op := range doc.Model.Operations {
+		if len(op.Config) != 0 {
+			t.Fatalf("model operation %q still carries config %v; configs must live in tasks only", op.ID, op.Config)
+		}
+	}
+
+	if err := ir.ResolveTask(doc, "audio_only_fast"); err != nil {
+		t.Fatalf("ResolveTask() error = %v", err)
+	}
+
+	soft := findOperation(doc, "soft_audio_presence")
+	if soft.ID == "" {
+		t.Fatalf("soft_audio_presence not found in resolved doc")
+	}
+	threshold, ok := soft.Config["threshold"].(float64)
+	if !ok {
+		t.Fatalf("soft_audio_presence threshold type = %T, want float64", soft.Config["threshold"])
+	}
+	if threshold != 0.04 {
+		t.Fatalf("soft_audio_presence threshold = %v, want 0.04 (from task)", threshold)
+	}
+
+	selector := findOperation(doc, "presence_choice_selector")
+	if selector.ID == "" {
+		t.Fatalf("presence_choice_selector not found in resolved doc")
+	}
+	variants, ok := selector.Config["variants"].([]any)
+	if !ok {
+		t.Fatalf("selector variants type = %T, want []any", selector.Config["variants"])
+	}
+	if len(variants) != 2 {
+		t.Fatalf("audio_only_fast selector variants len = %d, want 2 (loud+soft from task)", len(variants))
+	}
+
+	for _, op := range doc.Model.Operations {
+		if len(op.Config) != 0 {
+			t.Fatalf("model operation %q was mutated after ResolveTask; model must remain abstract", op.ID)
+		}
 	}
 }
 

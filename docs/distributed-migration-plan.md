@@ -102,8 +102,8 @@
 
 Какие файлы меняются:
 - `internal/runtime/engine.go`
-- `internal/runtime/ops/mock.go`
-- `internal/runtime/ops/realtime.go`
+- `ops/inprocgo/mock.go`
+- `ops/inprocgo/realtime.go`
 - `internal/ir/model.go`
 
 Что получаем:
@@ -267,7 +267,7 @@
 - singleton placement rules
 
 Особенно важно для:
-- `internal/runtime/ops/realtime.go`
+- `ops/inprocgo/realtime.go`
 
 Что получаем:
 - правило “один producer на stream” начинает соблюдаться и в runtime, а не только в static validation
@@ -312,7 +312,7 @@
 
 Какие файлы меняются:
 - `internal/runtime/engine.go`
-- `internal/runtime/ops/realtime.go`
+- `ops/inprocgo/realtime.go`
 
 Что получаем:
 - selectors становятся корректнее в distributed execution
@@ -355,7 +355,7 @@
 - сохранить текущий graph
 - добавить layer для placement/partitioning/ownership
 
-### Изменения в `internal/runtime/ops`
+### Изменения в `ops/`
 
 - отделить business logic от wire format
 - запретить неявную зависимость impl’ов от локальной памяти процесса

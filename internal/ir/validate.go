@@ -138,6 +138,10 @@ func validateTaskSpec(doc *Document, task TaskSpec, operationsByID map[string]Op
 	}
 
 	for _, input := range task.Inputs {
+		if input.Sink != "" {
+			problems = append(problems, fmt.Sprintf("%s.inputs[] must not contain sink references (use stream only)", prefix))
+			continue
+		}
 		if input.Stream == "" {
 			problems = append(problems, fmt.Sprintf("%s.inputs[].stream must not be empty", prefix))
 			continue
@@ -159,13 +163,55 @@ func validateTaskSpec(doc *Document, task TaskSpec, operationsByID map[string]Op
 		}
 	}
 
+	seenOutputStreams := make(map[string]struct{}, len(task.Outputs))
+	seenOutputSinks := make(map[string]struct{}, len(task.Outputs))
 	for _, output := range task.Outputs {
-		if output.Stream == "" {
-			problems = append(problems, fmt.Sprintf("%s.outputs[].stream must not be empty", prefix))
+		if output.Stream != "" && output.Sink != "" {
+			problems = append(problems, fmt.Sprintf("%s.outputs[] must set exactly one of {stream, sink}, got both (%q, %q)", prefix, output.Stream, output.Sink))
 			continue
 		}
-		if _, exists := streamsByID[output.Stream]; !exists {
-			problems = append(problems, fmt.Sprintf("%s output references unknown stream %q", prefix, output.Stream))
+		switch {
+		case output.Stream != "":
+			if _, dup := seenOutputStreams[output.Stream]; dup {
+				problems = append(problems, fmt.Sprintf("duplicate %s.outputs stream %q", prefix, output.Stream))
+				continue
+			}
+			seenOutputStreams[output.Stream] = struct{}{}
+			if _, exists := streamsByID[output.Stream]; !exists {
+				problems = append(problems, fmt.Sprintf("%s output references unknown stream %q", prefix, output.Stream))
+			}
+		case output.Sink != "":
+			if _, dup := seenOutputSinks[output.Sink]; dup {
+				problems = append(problems, fmt.Sprintf("duplicate %s.outputs sink %q", prefix, output.Sink))
+				continue
+			}
+			seenOutputSinks[output.Sink] = struct{}{}
+			op, exists := operationsByID[output.Sink]
+			if !exists {
+				problems = append(problems, fmt.Sprintf("%s output references unknown sink operation %q", prefix, output.Sink))
+				continue
+			}
+			if op.Kind != OperationKindSink {
+				problems = append(problems, fmt.Sprintf("%s output sink %q must reference a sink operation (got kind=%q)", prefix, output.Sink, op.Kind))
+			}
+		default:
+			problems = append(problems, fmt.Sprintf("%s.outputs[] must set either stream or sink", prefix))
+		}
+	}
+
+	seenConfigs := make(map[string]struct{}, len(task.OperationConfigs))
+	for _, entry := range task.OperationConfigs {
+		if entry.Operation == "" {
+			problems = append(problems, fmt.Sprintf("%s.operation_configs[].operation must not be empty", prefix))
+			continue
+		}
+		if _, exists := seenConfigs[entry.Operation]; exists {
+			problems = append(problems, fmt.Sprintf("duplicate %s operation_config for %q", prefix, entry.Operation))
+			continue
+		}
+		seenConfigs[entry.Operation] = struct{}{}
+		if _, exists := operationsByID[entry.Operation]; !exists {
+			problems = append(problems, fmt.Sprintf("%s operation_config references unknown operation %q", prefix, entry.Operation))
 		}
 	}
 

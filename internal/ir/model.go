@@ -5,7 +5,6 @@ type OperationKind string
 const (
 	OperationKindSource    OperationKind = "source"
 	OperationKindTransform OperationKind = "transform"
-	OperationKindSelector  OperationKind = "selector"
 	OperationKindSink      OperationKind = "sink"
 )
 
@@ -43,9 +42,23 @@ type TaskSpec struct {
 	Inputs            []TaskStreamRef    `yaml:"inputs"`
 	Outputs           []TaskStreamRef    `yaml:"outputs"`
 	OperationProfiles []OperationProfile `yaml:"operation_profiles"`
+	OperationConfigs  []OperationConfig  `yaml:"operation_configs"`
 	Constraints       TaskConstraints    `yaml:"constraints"`
 	Objective         TaskObjective      `yaml:"objective"`
 	Selectors         []SelectorTask     `yaml:"selectors"`
+}
+
+// OperationConfig — набор параметров, которые задача подставляет в
+// конкретную операцию модели. Модель описывает только структуру
+// (kind/impl/runtime/inputs/outputs), а конкретные значения (пороги,
+// порты, размеры буферов, selector-variants и т.п.) приходят из задачи.
+//
+// Merge-семантика: ключи из Config поверх op.Config операции модели;
+// отсутствующие ключи сохраняются. Повторное упоминание того же id
+// в пределах одной задачи — ошибка валидации.
+type OperationConfig struct {
+	Operation string         `yaml:"operation"`
+	Config    map[string]any `yaml:"config"`
 }
 
 type TaskConstraints struct {
@@ -99,8 +112,19 @@ type Stream struct {
 	Type StreamType `yaml:"type"`
 }
 
+// TaskStreamRef — элемент task.inputs / task.outputs.
+//
+// Для inputs допустим только Stream — задача описывает, какие данные она
+// считает входными. Для outputs элемент может нести либо Stream (нужный
+// доменный результат), либо Sink (требуемый побочный эффект: консоль,
+// веб-UI, файл и т.п.). Планировщик трактует оба случая одинаково:
+// собирает граф так, чтобы указанные streams были вычислены, а
+// указанные sinks — запущены (и их inputs подтянулись автоматически).
+// Ровно одно из полей должно быть непустым; одновременно задавать оба
+// нельзя — валидация это отсекает.
 type TaskStreamRef struct {
 	Stream string `yaml:"stream"`
+	Sink   string `yaml:"sink"`
 }
 
 type OperationProfile struct {

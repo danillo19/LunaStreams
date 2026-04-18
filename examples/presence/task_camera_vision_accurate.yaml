@@ -1,0 +1,40 @@
+task:
+  id: camera_vision_accurate
+  inputs:
+    - stream: camera_frame
+  outputs:
+    - stream: presence_decision
+    - stream: presence_strategy
+    - sink: presence_sink
+    - sink: strategy_sink
+  operation_profiles:
+    - operation: face_presence
+      cost: 15
+      weight: 0.98
+      latency_ms: 60
+  operation_configs:
+    - operation: camera_source
+      config:
+        device_index: 0
+        jpeg_quality: 75
+        max_width: 640
+    - operation: face_presence
+      config:
+        scale_factor: 1.2
+        min_neighbors: 5
+        min_face_px: 80
+    - operation: presence_choice_selector
+      config:
+        default_choice: plan_inactive
+        tick_ms: 100
+        variants:
+          - stream: face_presence
+            kind: bool
+            label: face_vision
+  constraints:
+    min_total_weight: 0.90
+    max_total_latency_ms: 100
+  objective:
+    primary: max_weight
+    secondary: min_cost
+  # Ожидаемо: face_presence (python subprocess)

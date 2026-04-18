@@ -1,16 +1,13 @@
-// Package drivers содержит реализации различных runtime-драйверов для
-// LunaStreams. Драйверы позволяют подключать операции, написанные не на
-// Go: внешние процессы (Python/Node/Rust/Bash), Docker-контейнеры, gRPC-
-// и HTTP-сервисы. Engine не знает о конкретной природе операции — он
-// пользуется только контрактом runtime.Operator.
+// Package subprocess реализует runtime-драйвер, запускающий операцию как
+// отдельный долгоживущий процесс и общающийся с ней по polyglot-контракту
+// (NDJSON поверх stdin/stdout). См. docs/operation-interface.md.
 //
-// Добавление новой реализации состоит из двух шагов:
-//  1. реализовать runtime.OperationRuntime (метод Create);
-//  2. зарегистрировать драйвер в runtime.Registry через RegisterDriver.
+// Пакет также хостит эталонные реализации операций на других языках — см.
+// подкаталог python/. Добавление новой языковой реализации — это обычно
+// новый скрипт рядом со ссылкой на него в YAML через runtime.command.
 //
-// Драйвер subprocess в этом файле — это справочная эталонная реализация
-// polyglot-контракта, описанного в docs/operation-interface.md.
-package drivers
+// Регистрация драйвера в общем Registry выполняется через Register.
+package subprocess
 
 import (
 	"bufio"
@@ -28,21 +25,30 @@ import (
 	rt "LunaStreams/internal/runtime"
 )
 
-// SubprocessDriver запускает каждую операцию в отдельном долгоживущем
-// процессе. Взаимодействие идёт через stdin/stdout в формате NDJSON:
+// DriverKind — runtime.kind, под которым драйвер регистрируется.
+const DriverKind = "subprocess"
+
+// Driver запускает каждую операцию в отдельном долгоживущем процессе.
+// Взаимодействие идёт через stdin/stdout в формате NDJSON:
 // одна строка на запрос, одна строка на ответ. Формат совместим с
 // polyglot-контрактом (RunRequest / RunResult).
-type SubprocessDriver struct {
+type Driver struct {
 	logger *rt.BeautifulLogger
 }
 
-// NewSubprocessDriver создаёт драйвер для kind="subprocess".
-func NewSubprocessDriver(logger *rt.BeautifulLogger) *SubprocessDriver {
-	return &SubprocessDriver{logger: logger}
+// NewDriver создаёт драйвер для kind="subprocess".
+func NewDriver(logger *rt.BeautifulLogger) *Driver {
+	return &Driver{logger: logger}
+}
+
+// Register регистрирует subprocess-драйвер в переданном Registry. Удобно
+// вызывать из общего ops.RegisterAll.
+func Register(registry *rt.Registry) error {
+	return registry.RegisterDriver(DriverKind, NewDriver(rt.DefaultLogger()))
 }
 
 // Create запускает процесс и возвращает оператор, сериализующий вызовы.
-func (d *SubprocessDriver) Create(spec ir.Operation) (rt.Operator, error) {
+func (d *Driver) Create(spec ir.Operation) (rt.Operator, error) {
 	if len(spec.Runtime.Command) == 0 {
 		return nil, fmt.Errorf("subprocess op %q requires runtime.command", spec.ID)
 	}

@@ -6,11 +6,13 @@ IR теперь разделяет:
 - `model.operations[]` и `model.streams[]`: вычислительную модель
 - `task.*`: постановку задачи на этой модели
 
-Каждый пример в `examples/` хранится в виде директории с двумя файлами:
-- `presence.yaml` — вычислительная модель (operations + streams)
-- `task.yaml` — набор постановок задачи (`task_variants`): доступные входы, требуемые выходы, профили операций, `constraints` и `objective`
+Каждый пример в `examples/` хранится в виде директории:
+- `model.yaml` — вычислительная модель (`model.operations` + `model.streams`)
+- `task_<id>.yaml` — по одному варианту задачи в корневом блоке `task:` (loader
+  склеивает их в `task_variants` по полю `id`)
+- при желании можно оставить классический один файл с `task_variants: []`
 
-Такое разделение позволяет фиксировать модель предметной области отдельно от того, какую именно задачу на ней решают. Loader автоматически объединяет все `*.yaml` в директории в один документ.
+Loader автоматически объединяет все `*.yaml` / `*.yml` в директории в один документ.
 
 Флагом `-ir` CLI принимает либо путь к директории примера (новая схема), либо путь к одиночному YAML-файлу (обратная совместимость).
 
@@ -36,11 +38,12 @@ internal/ir/                        # IR-модель, загрузка, вал�
 internal/planner/                   # compile-time выбор redundant планов
 internal/graph/                     # построение producer/consumer graph
 internal/runtime/                   # engine, store, bus, registry, logger
-internal/runtime/ops/               # inproc_go impl операций
-internal/runtime/drivers/           # runtime-драйверы: subprocess (NDJSON), задел под docker/grpc/http
+ops/                                # все реализации операций, разложенные по driver/языку
+ops/inprocgo/                       # inproc_go Go-native реализации
+ops/subprocess/                     # subprocess-драйвер (NDJSON)
+ops/subprocess/python/              # polyglot-операции на Python
 examples/                           # примеры IR (каждый пример — отдельная директория)
-examples/presence/                  # redundant polyglot-пример: presence.yaml + task.yaml
-examples/ops/                       # polyglot-реализации операций (Python)
+examples/presence/                  # redundant polyglot-пример: model.yaml + task_*.yaml
 docs/runtime-components.md          # подробная архитектура компонентов
 docs/operation-interface.md         # контракт polyglot-операции (RunRequest / RunResult)
 ```
@@ -58,8 +61,6 @@ model:
       impl: microphone.capture
       outputs:
         - stream: audio_chunk
-      config:
-        sample_rate: 16000
 
   streams:
     - id: audio_chunk
@@ -71,7 +72,18 @@ task:
 
   outputs:
     - stream: presence_decision
+    - sink: presence_sink
+
+  operation_configs:
+    - operation: microphone_source
+      config:
+        sample_rate: 16000
 ```
+
+Модель описывает только «чертёж» — идентификаторы, связи, runtime.
+Конкретные значения (пороги, порты, устройства, `selector.variants`
+и т.п.) задаются per-task в блоке `operation_configs`. Это позволяет
+подменять требования и реализации задач, не трогая саму модель.
 
 Для обратной совместимости loader всё ещё понимает старый плоский формат с корневыми `operations[]` и `streams[]`, но новые примеры используют явное разделение.
 
@@ -81,7 +93,6 @@ task:
 - `kind`: тип операции
   - `source`
   - `transform`
-  - `selector`
   - `sink`
 - `mode`: режим исполнения
   - `always_on`
@@ -90,7 +101,8 @@ task:
 - `runtime`: описывает, как запускать реализацию (опционально, см. ниже)
 - `inputs[]`: входные streams
 - `outputs[]`: выходные streams
-- `config`: свободная конфигурация реализации
+- `config`: свободная конфигурация реализации (обычно задаётся per-task через
+  `task.operation_configs[]`, а не в модели)
 - `domain`: необязательные доменные метаданные операции
   - `cost`: условная стоимость использования операции
   - `weight`: вклад операции в итоговую надёжность/полезность решения
@@ -133,8 +145,9 @@ runtime:
 
 Контракт данных для polyglot-драйверов (RunRequest/RunResult, schema,
 encoding) описан в `docs/operation-interface.md`. Справочная реализация
-субпроцесс-драйвера лежит в `internal/runtime/drivers/subprocess.go`, а
-примеры polyglot-операций — в `examples/ops/`.
+subprocess-драйвера лежит в `ops/subprocess/driver.go`, а эталонные
+polyglot-операции на Python — в `ops/subprocess/python/`. Общая точка
+сборки всех операций — `ops/ops.go` (`ops.RegisterAll`).
 
 ### Поля `model.stream`
 
@@ -147,13 +160,31 @@ encoding) описан в `docs/operation-interface.md`. Справочная р
 
 ### Поля `task`
 
-- `inputs[]`: какие входные streams считаются доступными для решения задачи
-- `outputs[]`: какие выходные streams требуется получить
+- `inputs[]`: какие входные streams считаются доступными для решения задачи.
+  Каждый элемент — `stream: <id>`.
+- `outputs[]`: что задача хочет получить от графа. Это единый список целей,
+  каждый элемент — либо `stream: <id>` (нужен доменный результат в этом
+  stream-е), либо `sink: <id>` (нужен побочный эффект от sink-операции:
+  консоль, веб-UI, файл и т.п.). Planner строит план так, чтобы
+  перечисленные streams были вычислены, а перечисленные sinks — запущены;
+  любой sink модели, не попавший в outputs, отбрасывается и не стартует.
+  BFS planner-а дополнительно стартует от `inputs` каждого `sink:`-элемента,
+  поэтому stream-часть outputs можно держать минимальной — camera/audio и
+  прочие producer-streams подтянутся сами, если они нужны выбранному sink-у
+  (например, `frontend_sink`). Если outputs пуст целиком — сохраняется
+  старое поведение из соображений обратной совместимости: planner считает
+  все sink-и модели требуемыми.
 - `operation_profiles[]`: нефункциональные свойства операций в рамках задачи
   - `operation`
   - `cost`
   - `weight`
   - `latency_ms`
+- `operation_configs[]`: значения `operation.config` для модели в рамках
+  этой задачи (пороги, размеры буферов, `selector.variants`, порты и т.п.)
+  - `operation`: id операции модели
+  - `config`: произвольная map, ключи которой shallow-merge поверх `op.Config`
+    модели (в стандартных примерах модель приходит без `config:` вовсе, и
+    значения полностью определяются задачей)
 - `constraints`
   - `min_total_weight`
   - `max_total_latency_ms`
@@ -187,7 +218,7 @@ encoding) описан в `docs/operation-interface.md`. Справочная р
 5. строится dependency graph
 6. создаётся `Engine`
 7. через `Registry` создаются конкретные операторы
-8. запускаются `always_on source` и `always_on selector`
+8. запускаются `always_on` операции: источники и периодические агрегаторы
 9. dispatcher начинает слушать общий `EventBus`
 
 ### Общая модель исполнения
@@ -232,9 +263,11 @@ encoding) описан в `docs/operation-interface.md`. Справочная р
 
 Обычно запускается в `task_per_event` режиме: при событии на одном из входных streams.
 
-### `selector`
+### Selector-style transform
 
-`selector` агрегирует несколько streams и вычисляет итоговое решение.
+Отдельного `kind: selector` больше не требуется. Такая логика моделируется
+как обычный `transform` с `mode: always_on`: runtime периодически читает
+последние значения входных streams из `StreamStore` и запускает оператор.
 
 Он полезен, когда:
 - нужно объединить несколько источников сигналов
@@ -349,7 +382,7 @@ Planner для требуемых `task.outputs`:
 
 ## Пример: redundant presence
 
-`examples/presence/` показывает, как вычислительная модель отделяется от постановки задачи для доменного факта `presence`. Модель лежит в `examples/presence/presence.yaml`, набор `task_variants` — в `examples/presence/task.yaml`.
+`examples/presence/` показывает, как вычислительная модель отделяется от постановки задачи для доменного факта `presence`. Модель — `examples/presence/model.yaml`, варианты задач — отдельные файлы `task_<id>.yaml` с корневым `task:`.
 
 ### Логика графа
 
@@ -400,7 +433,7 @@ go run ./cmd/runtime -ir ./examples/presence -task low_cost_interactive -debug
 
 ## Запуск
 
-CLI принимает путь к директории примера через `-ir` и id постановки задачи через `-task`. Loader сам объединит `presence.yaml` + `task.yaml` в один документ.
+CLI принимает путь к директории примера через `-ir` и id постановки задачи через `-task`. Loader объединит `model.yaml` и все `task_*.yaml` (и любые другие `*.yaml` в каталоге) в один документ.
 
 ### Redundant presence (low cost)
 
@@ -427,7 +460,7 @@ config:
 лица (OpenCV Haar cascade):
 
 ```bash
-pip install -r examples/ops/requirements.txt
+pip install -r ops/subprocess/python/requirements.txt
 go run ./cmd/runtime -ir ./examples/presence -task camera_vision_accurate -debug
 ```
 
@@ -439,7 +472,7 @@ audio RMS и индикатор presence. Это обычный sink (`impl: fro
 Server-Sent Events:
 
 ```bash
-pip install -r examples/ops/requirements.txt
+pip install -r ops/subprocess/python/requirements.txt
 go run ./cmd/runtime -ir ./examples/presence -task frontend_full -debug
 # далее открыть http://127.0.0.1:8080
 ```
@@ -453,11 +486,12 @@ Frontend sink умеет работать и в урезанных task-вари
 дропает из его inputs стримы, которые не вошли в выбранный план (например,
 если task не запрашивает камеру, sink останется, но без `camera_frame`).
 
-Go runtime запускает `examples/ops/camera_capture.py` и
-`examples/ops/face_presence.py` как долгоживущие subprocess-ы и общается
-с ними по protocol-у из `docs/operation-interface.md`. Никакого C-binding
-для камеры в Go не требуется — любая реализация сводится к добавлению
-скрипта/бинаря и записи `runtime.kind` + `runtime.command` в IR.
+Go runtime запускает `ops/subprocess/python/camera_capture.py` и
+`ops/subprocess/python/face_presence.py` как долгоживущие subprocess-ы и
+общается с ними по protocol-у из `docs/operation-interface.md`. Никакого
+C-binding для камеры в Go не требуется — любая реализация сводится к
+добавлению скрипта/бинаря и записи `runtime.kind` + `runtime.command`
+в IR.
 
 ## Точка входа
 
@@ -480,6 +514,6 @@ Go runtime запускает `examples/ops/camera_capture.py` и
 ## Что читать дальше
 
 - общее устройство компонентов: `docs/runtime-components.md`
-- пример выбора между избыточными вариантами: `examples/presence/` (`presence.yaml` + `task.yaml`)
+- пример выбора между избыточными вариантами: `examples/presence/` (`model.yaml` + `task_*.yaml`)
 - polyglot-контракт операций: `docs/operation-interface.md`
 - entrypoint runtime: `cmd/runtime/main.go`

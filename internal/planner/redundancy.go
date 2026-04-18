@@ -74,7 +74,9 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 	operationsByID := buildOperationsByID(cloned)
 	operationProfiles := buildOperationProfiles(cloned.Task.OperationProfiles)
 	selectorTasks := buildSelectorTasks(cloned.Task.Selectors)
-	requiredOps := requiredOperationIDs(cloned, taskOutputStreams(cloned.Task.Outputs))
+	outputStreams := taskOutputStreams(cloned.Task.Outputs)
+	outputSinks := taskOutputSinks(cloned.Task.Outputs)
+	requiredOps := requiredOperationIDs(cloned, outputStreams, outputSinks)
 	context := buildPlanningContext(cloned.Task)
 
 	var decisions []Decision
@@ -153,7 +155,7 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 		})
 	}
 
-	pruned := pruneToRequiredSubgraph(cloned, taskOutputStreams(cloned.Task.Outputs))
+	pruned := pruneToRequiredSubgraph(cloned, outputStreams, outputSinks)
 	return &PlanResult{
 		Document:  pruned,
 		Decisions: decisions,
@@ -344,7 +346,35 @@ func parsePlannedVariants(op ir.Operation, producerByStream map[string]string, o
 	return variants, nil
 }
 
-func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string) *ir.Document {
+// pruneToRequiredSubgraph обрезает граф до минимального поддерева,
+// необходимого для выполнения задачи.
+//
+// Контракт задачи теперь един: task.inputs описывают доступные источники,
+// task.outputs перечисляют цели. Каждый элемент outputs — это либо
+// `stream: <id>` (нужен доменный результат), либо `sink: <id>` (нужен
+// побочный эффект: консоль, веб-UI, файл и т.п.). Планировщик ставит эти
+// две вещи в одну очередь требований и сам тянет за собой producer-ы.
+//
+// Параметры:
+//   - requiredOutputStreams — id streams из outputs[].stream;
+//   - requiredSinks — id sink-операций из outputs[].sink. Любой sink,
+//     не перечисленный здесь, отбрасывается (даже если его inputs
+//     совпадают с какими-то required streams).
+//
+// Алгоритм:
+//  1. Seed BFS: кладём requiredOutputStreams и inputs каждого sink из
+//     requiredSinks. Это тянет producer-цепочки, нужные одновременно для
+//     доменных outputs и для оставленных sink-ов.
+//  2. BFS идёт назад по producer-ам, собирая requiredOps/requiredStreams.
+//  3. Sink-оп остаётся, только если его id есть в requiredSinks.
+//     filterSinkInputs дополнительно срезает у него ссылки на streams,
+//     которые не попали в граф (если, например, selector выбрал не все
+//     варианты).
+//
+// Если task.outputs пуст целиком — это совместимость со старыми yaml:
+// ведём себя как раньше (стартуем BFS от inputs всех sink-ов) и keep-
+// правило для sink-ов становится "хотя бы один input в плане".
+func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string, requiredSinks []string) *ir.Document {
 	if doc == nil {
 		return nil
 	}
@@ -352,6 +382,16 @@ func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string) *
 	operationsByID := buildOperationsByID(doc)
 	producerByStream := buildProducerByStream(doc)
 	streamsByID := buildStreamsByID(doc)
+
+	keepSinks := make(map[string]struct{}, len(requiredSinks))
+	for _, sinkID := range requiredSinks {
+		if sinkID == "" {
+			continue
+		}
+		keepSinks[sinkID] = struct{}{}
+	}
+
+	strictSinkPolicy := len(requiredOutputStreams) > 0 || len(keepSinks) > 0
 
 	requiredStreams := make(map[string]struct{})
 	requiredOutputSet := make(map[string]struct{}, len(requiredOutputStreams))
@@ -367,7 +407,22 @@ func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string) *
 		requiredStreams[streamID] = struct{}{}
 		queue = append(queue, streamID)
 	}
-	if len(requiredStreams) == 0 {
+
+	for sinkID := range keepSinks {
+		op, exists := operationsByID[sinkID]
+		if !exists {
+			continue
+		}
+		for _, input := range op.Inputs {
+			if _, seen := requiredStreams[input.Stream]; seen {
+				continue
+			}
+			requiredStreams[input.Stream] = struct{}{}
+			queue = append(queue, input.Stream)
+		}
+	}
+
+	if !strictSinkPolicy {
 		for _, op := range doc.Operations {
 			if op.Kind != ir.OperationKindSink {
 				continue
@@ -416,31 +471,26 @@ func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string) *
 
 	for _, op := range doc.Operations {
 		if op.Kind == ir.OperationKindSink {
-			keep := false
-			if len(requiredOutputSet) > 0 {
-				for _, input := range op.Inputs {
-					if _, exists := requiredOutputSet[input.Stream]; exists {
-						keep = true
-						break
-					}
+			if strictSinkPolicy {
+				if _, ok := keepSinks[op.ID]; !ok {
+					continue
 				}
 			} else {
+				keep := false
 				for _, input := range op.Inputs {
 					if _, exists := requiredStreams[input.Stream]; exists {
 						keep = true
 						break
 					}
 				}
-			}
-			if !keep {
-				continue
+				if !keep {
+					continue
+				}
 			}
 
 			// Если sink подписан на несколько streams, а часть из них
 			// выброшена из плана (их producer не выбран), оставляем только
-			// те inputs, которые реально остаются в документе. Это позволяет
-			// переиспользовать один sink (например, frontend.web) в задачах
-			// разной полноты без правки yaml.
+			// те inputs, которые реально остаются в документе.
 			pruned.Operations = append(pruned.Operations, filterSinkInputs(op, requiredStreams))
 			continue
 		}
@@ -567,10 +617,29 @@ func cloneTask(task ir.TaskSpec) ir.TaskSpec {
 		Inputs:            append([]ir.TaskStreamRef(nil), task.Inputs...),
 		Outputs:           append([]ir.TaskStreamRef(nil), task.Outputs...),
 		OperationProfiles: append([]ir.OperationProfile(nil), task.OperationProfiles...),
+		OperationConfigs:  cloneOperationConfigs(task.OperationConfigs),
 		Constraints:       task.Constraints,
 		Objective:         task.Objective,
 		Selectors:         append([]ir.SelectorTask(nil), task.Selectors...),
 	}
+}
+
+func cloneOperationConfigs(configs []ir.OperationConfig) []ir.OperationConfig {
+	if len(configs) == 0 {
+		return nil
+	}
+	result := make([]ir.OperationConfig, 0, len(configs))
+	for _, entry := range configs {
+		clone := ir.OperationConfig{Operation: entry.Operation}
+		if len(entry.Config) > 0 {
+			clone.Config = make(map[string]any, len(entry.Config))
+			for key, value := range entry.Config {
+				clone.Config[key] = value
+			}
+		}
+		result = append(result, clone)
+	}
+	return result
 }
 
 func cloneRuntimeSpec(spec ir.RuntimeSpec) ir.RuntimeSpec {
@@ -831,7 +900,7 @@ func collectVariantClosure(doc *ir.Document, streamID string) ([]string, []strin
 	return sortedKeys(requiredOps), sortedKeys(requiredInputs)
 }
 
-func requiredOperationIDs(doc *ir.Document, requiredOutputStreams []string) map[string]struct{} {
+func requiredOperationIDs(doc *ir.Document, requiredOutputStreams []string, requiredSinks []string) map[string]struct{} {
 	if doc == nil {
 		return nil
 	}
@@ -840,6 +909,16 @@ func requiredOperationIDs(doc *ir.Document, requiredOutputStreams []string) map[
 	requiredOps := make(map[string]struct{})
 	queue := make([]string, 0, len(requiredOutputStreams))
 	queue = append(queue, requiredOutputStreams...)
+
+	for _, sinkID := range requiredSinks {
+		op, exists := operationsByID[sinkID]
+		if !exists {
+			continue
+		}
+		for _, input := range op.Inputs {
+			queue = append(queue, input.Stream)
+		}
+	}
 
 	if len(queue) == 0 {
 		for _, op := range doc.Operations {
@@ -941,6 +1020,8 @@ func applySelectorTask(op ir.Operation, selector ir.SelectorTask) ir.Operation {
 	return op
 }
 
+// taskOutputStreams возвращает список stream-id из task.outputs,
+// отфильтровывая элементы, которые ссылаются на sink.
 func taskOutputStreams(outputs []ir.TaskStreamRef) []string {
 	result := make([]string, 0, len(outputs))
 	for _, output := range outputs {
@@ -948,6 +1029,19 @@ func taskOutputStreams(outputs []ir.TaskStreamRef) []string {
 			continue
 		}
 		result = append(result, output.Stream)
+	}
+	return result
+}
+
+// taskOutputSinks возвращает список sink-id из task.outputs,
+// отфильтровывая элементы, которые ссылаются на stream.
+func taskOutputSinks(outputs []ir.TaskStreamRef) []string {
+	result := make([]string, 0, len(outputs))
+	for _, output := range outputs {
+		if output.Sink == "" {
+			continue
+		}
+		result = append(result, output.Sink)
 	}
 	return result
 }

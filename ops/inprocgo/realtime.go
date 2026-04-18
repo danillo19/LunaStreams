@@ -1,4 +1,4 @@
-package ops
+package inprocgo
 
 // #include <stdlib.h>
 import "C"

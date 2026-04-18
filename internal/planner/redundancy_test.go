@@ -54,7 +54,7 @@ func TestCompileRedundantChoicesPrunesExpensiveBranch(t *testing.T) {
 				},
 				{
 					ID:   "presence_choice_selector",
-					Kind: ir.OperationKindSelector,
+					Kind: ir.OperationKindTransform,
 					Mode: ir.OperationModeAlwaysOn,
 					Impl: "selector.redundant_choice",
 					Inputs: []ir.StreamRef{
@@ -160,7 +160,7 @@ func TestCompileRedundantChoicesChoosesHigherConfidenceRouteForDifferentTask(t *
 				{ID: "keyboard_source", Kind: ir.OperationKindSource, Mode: ir.OperationModeAlwaysOn, Impl: "keyboard.read", Outputs: []ir.StreamRef{{Stream: "pressed_key"}}},
 				{
 					ID:   "presence_choice_selector",
-					Kind: ir.OperationKindSelector,
+					Kind: ir.OperationKindTransform,
 					Mode: ir.OperationModeAlwaysOn,
 					Impl: "selector.redundant_choice",
 					Inputs: []ir.StreamRef{

@@ -11,11 +11,11 @@ import (
 	"LunaStreams/internal/ir"
 	"LunaStreams/internal/planner"
 	rt "LunaStreams/internal/runtime"
-	"LunaStreams/internal/runtime/ops"
+	"LunaStreams/ops"
 )
 
 func main() {
-	irPath := flag.String("ir", "./examples/presence", "path to IR yaml file or example directory (presence.yaml + task.yaml)")
+	irPath := flag.String("ir", "./examples/presence", "path to IR yaml file or example directory (e.g. model.yaml + task_*.yaml)")
 	taskID := flag.String("task", "", "task id from task/task_variants")
 	debug := flag.Bool("debug", false, "enable debug logs")
 	flag.Parse()
