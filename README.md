@@ -1,56 +1,55 @@
 # LunaStreams
 
-`LunaStreams` это MVP runtime для исполнения простого интерактивного IR на Go.
+`LunaStreams` — runtime для исполнения графа операций, описанного в YAML IR.
 
-IR теперь разделяет:
-- `model.operations[]` и `model.streams[]`: вычислительную модель
-- `task.*`: постановку задачи на этой модели
+IR разделён на две части:
+- `model` — вычислительная модель: операции, streams, связи
+- `task` — постановка задачи: доступные входы, требуемые выходы, ограничения, конфиг
 
-Каждый пример в `examples/` хранится в виде директории:
-- `model.yaml` — вычислительная модель (`model.operations` + `model.streams`)
-- `task_<id>.yaml` — по одному варианту задачи в корневом блоке `task:` (loader
-  склеивает их в `task_variants` по полю `id`)
-- при желании можно оставить классический один файл с `task_variants: []`
+Основной пример — `examples/presence/`: один `model.yaml` и несколько `task_*.yaml`.
 
-Loader автоматически объединяет все `*.yaml` / `*.yml` в директории в один документ.
-
-Флагом `-ir` CLI принимает либо путь к директории примера (новая схема), либо путь к одиночному YAML-файлу (обратная совместимость).
-
-Основной пример — `examples/presence/`: redundant pipeline, где задача отдельно задаёт требования, а planner сам выбирает маршрут. Он же демонстрирует смешанный polyglot-stack: Go-операции для микрофона и клавиатуры, Python-subprocess для камеры и компьютерного зрения.
-
-Подробная архитектура компонентов вынесена в `docs/runtime-components.md`, а polyglot-контракт — в `docs/operation-interface.md`.
-
-## Идея
-
-Runtime исполняет граф операций, где:
-- `source` производит события и пишет данные в streams
-- `transform` реагирует на события входных streams и вычисляет новые значения
-- `selector` периодически читает несколько streams и принимает итоговое решение
-- `sink` реагирует на события и выводит/сохраняет результат
-
-Каждый `stream` хранит только последнее значение и счётчик версий `seq`.
-
-## Структура репозитория
+## Структура
 
 ```text
-cmd/runtime/main.go                 # entrypoint runtime
-internal/ir/                        # IR-модель, загрузка, валидация
-internal/planner/                   # compile-time выбор redundant планов
-internal/graph/                     # построение producer/consumer graph
-internal/runtime/                   # engine, store, bus, registry, logger
-ops/                                # все реализации операций, разложенные по driver/языку
-ops/inprocgo/                       # inproc_go Go-native реализации
-ops/subprocess/                     # subprocess-драйвер (NDJSON)
-ops/subprocess/python/              # polyglot-операции на Python
-examples/                           # примеры IR (каждый пример — отдельная директория)
-examples/presence/                  # redundant polyglot-пример: model.yaml + task_*.yaml
-docs/runtime-components.md          # подробная архитектура компонентов
-docs/operation-interface.md         # контракт polyglot-операции (RunRequest / RunResult)
+cmd/runtime/                 # запуск runtime
+cmd/gen-graphs/              # генерация Mermaid-диаграмм для examples/presence
+internal/ir/                 # модель IR, load/resolve/validate
+internal/planner/            # compile-time выбор redundant-плана
+internal/graph/              # producer/consumer graph
+internal/runtime/            # engine, registry, bus, store, logger
+ops/inprocgo/                # Go-native операции
+ops/subprocess/              # subprocess driver
+ops/subprocess/python/       # Python операции и launcher-скрипты
+examples/presence/           # model.yaml + task_*.yaml
+examples/presence/graphs/    # mmd/svg/png для presence
+docs/                        # документация и общие диаграммы
 ```
+
+## Как работает runtime
+
+Поток запуска:
+
+1. `ops.RegisterAll` регистрирует реализации и runtime-драйверы.
+2. `ir.Load` читает YAML-файл или объединяет все `*.yaml` в директории.
+3. `ir.ResolveTask` выбирает `task` и накладывает `task.operation_configs`.
+4. `ir.Validate` проверяет IR.
+5. `planner.CompileRedundantChoices` выбирает нужные ветки и вырезает лишние.
+6. `graph.Build` строит producer/consumer graph.
+7. `runtime.NewEngine` создаёт операторы.
+8. `engine.Start` запускает `always_on` операции и dispatcher.
+
+Операции:
+- `source` — генерирует данные
+- `transform` — преобразует входные streams
+- `sink` — завершает цепочку побочным эффектом
+
+Режимы:
+- `always_on`
+- `task_per_event`
 
 ## Формат IR
 
-IR задаётся YAML-документом с разделением `model` и `task`:
+Минимальная схема:
 
 ```yaml
 model:
@@ -61,468 +60,111 @@ model:
       impl: microphone.capture
       outputs:
         - stream: audio_chunk
-
   streams:
     - id: audio_chunk
       type: audio_chunk
 
 task:
+  id: audio_only_fast
   inputs:
     - stream: audio_chunk
-
   outputs:
     - stream: presence_decision
     - sink: presence_sink
-
   operation_configs:
     - operation: microphone_source
       config:
         sample_rate: 16000
 ```
 
-Модель описывает только «чертёж» — идентификаторы, связи, runtime.
-Конкретные значения (пороги, порты, устройства, `selector.variants`
-и т.п.) задаются per-task в блоке `operation_configs`. Это позволяет
-подменять требования и реализации задач, не трогая саму модель.
-
-Для обратной совместимости loader всё ещё понимает старый плоский формат с корневыми `operations[]` и `streams[]`, но новые примеры используют явное разделение.
-
-### Поля `model.operation`
-
-- `id`: уникальный идентификатор операции
-- `kind`: тип операции
-  - `source`
-  - `transform`
-  - `sink`
-- `mode`: режим исполнения
-  - `always_on`
-  - `task_per_event`
-- `impl`: строковый ключ реализации, который должен быть зарегистрирован в `Registry`
-- `runtime`: описывает, как запускать реализацию (опционально, см. ниже)
-- `inputs[]`: входные streams
-- `outputs[]`: выходные streams
-- `config`: свободная конфигурация реализации (обычно задаётся per-task через
-  `task.operation_configs[]`, а не в модели)
-- `domain`: необязательные доменные метаданные операции
-  - `cost`: условная стоимость использования операции
-  - `weight`: вклад операции в итоговую надёжность/полезность решения
-
-`domain` сохранён для совместимости, но для новых постановок задачи предпочтительно использовать `task.operation_profiles`.
-
-### Поле `operation.runtime`
-
-`runtime` описывает способ запуска реализации операции. Поле опционально:
-пустой `runtime` эквивалентен `kind: inproc_go` — Go-фабрика из `Registry`.
-Runtime позволяет смешивать на одном графе операции разной природы:
-
-```yaml
-runtime:
-  kind: subprocess                # | inproc_go | docker | grpc | http
-  command: [python3, ops/face_presence.py]
-  args: []
-  work_dir: ""
-  env:
-    PYTHONUNBUFFERED: "1"
-  image: ""                       # для docker runtime
-  endpoint: ""                    # для grpc/http runtime
-```
-
-Поддерживаемые kind-ы и их требования:
-
-| kind          | Когда используется                    | Обязательные поля       |
-|---------------|----------------------------------------|-------------------------|
-| `inproc_go`   | обычная Go-операция                    | —                       |
-| `subprocess`  | Python / Node / Rust / bash-процессы   | `command`               |
-| `docker`      | контейнеризированный код (roadmap)     | `image`                 |
-| `grpc`/`http` | внешний сервис (roadmap)               | `endpoint`              |
-
-Каждому `kind` соответствует драйвер, зарегистрированный в `runtime.Registry`
-через `RegisterDriver(kind, driver)`. Драйвер реализует интерфейс
-`OperationRuntime.Create(spec) -> Operator`. Чтобы добавить новую среду
-исполнения (например, WASM, Kubernetes Job, AWS Lambda), достаточно
-реализовать один тип и зарегистрировать его — IR, planner и engine менять
-не нужно.
-
-Контракт данных для polyglot-драйверов (RunRequest/RunResult, schema,
-encoding) описан в `docs/operation-interface.md`. Справочная реализация
-subprocess-драйвера лежит в `ops/subprocess/driver.go`, а эталонные
-polyglot-операции на Python — в `ops/subprocess/python/`. Общая точка
-сборки всех операций — `ops/ops.go` (`ops.RegisterAll`).
-
-### Поля `model.stream`
-
-- `id`: уникальный идентификатор потока
-- `type`: логический тип данных
-  - `video_frame`
-  - `audio_chunk`
-  - `bool`
-  - `text`
-
-### Поля `task`
-
-- `inputs[]`: какие входные streams считаются доступными для решения задачи.
-  Каждый элемент — `stream: <id>`.
-- `outputs[]`: что задача хочет получить от графа. Это единый список целей,
-  каждый элемент — либо `stream: <id>` (нужен доменный результат в этом
-  stream-е), либо `sink: <id>` (нужен побочный эффект от sink-операции:
-  консоль, веб-UI, файл и т.п.). Planner строит план так, чтобы
-  перечисленные streams были вычислены, а перечисленные sinks — запущены;
-  любой sink модели, не попавший в outputs, отбрасывается и не стартует.
-  BFS planner-а дополнительно стартует от `inputs` каждого `sink:`-элемента,
-  поэтому stream-часть outputs можно держать минимальной — camera/audio и
-  прочие producer-streams подтянутся сами, если они нужны выбранному sink-у
-  (например, `frontend_sink`). Если outputs пуст целиком — сохраняется
-  старое поведение из соображений обратной совместимости: planner считает
-  все sink-и модели требуемыми.
-- `operation_profiles[]`: нефункциональные свойства операций в рамках задачи
-  - `operation`
-  - `cost`
-  - `weight`
-  - `latency_ms`
-- `operation_configs[]`: значения `operation.config` для модели в рамках
-  этой задачи (пороги, размеры буферов, `selector.variants`, порты и т.п.)
-  - `operation`: id операции модели
-  - `config`: произвольная map, ключи которой shallow-merge поверх `op.Config`
-    модели (в стандартных примерах модель приходит без `config:` вовсе, и
-    значения полностью определяются задачей)
-- `constraints`
-  - `min_total_weight`
-  - `max_total_latency_ms`
-  - `max_total_cost`
-- `objective`
-  - `primary`
-  - `secondary`
-- `task_variants[]`: альтернативные постановки задачи, которые можно выбрать через `-task`
-
-## Валидация IR
-
-Перед запуском runtime проверяет:
-- уникальность `operation.id`
-- уникальность `stream.id`
-- существование всех streams, указанных в `inputs` и `outputs`
-- что `source` не имеет `inputs`
-- что `sink` не имеет `outputs`
-- что у каждого stream ровно один producer
-- что каждый `impl` зарегистрирован в `Registry`
-- что `domain.cost` и `domain.weight`, если заданы, неотрицательны
-
-Если хотя бы одно правило нарушено, запуск прекращается на этапе `validate`.
-
-## Как работает runtime
-
-Поток запуска:
-1. `cmd/runtime/main.go` читает `-ir`
-2. IR загружается из YAML
-3. выполняется валидация
-4. для redundant selectors при необходимости компилируется execution plan
-5. строится dependency graph
-6. создаётся `Engine`
-7. через `Registry` создаются конкретные операторы
-8. запускаются `always_on` операции: источники и периодические агрегаторы
-9. dispatcher начинает слушать общий `EventBus`
-
-### Общая модель исполнения
-
-- `StreamStore` хранит последнее значение каждого stream и его `seq`
-- `EventBus` публикует события вида `{StreamID, Seq}`
-- dispatcher читает `EventBus` и запускает все `task_per_event` операции, подписанные на соответствующий stream
-- результат операции записывается обратно в `StreamStore`
-- после записи публикуется новое событие в `EventBus`
-
-### Гарантия по параллелизму
-
-Для `task_per_event` операций в MVP включён `max_in_flight=1`:
-- на каждую операцию выделен свой семафор
-- если операция уже выполняется, повторный запуск пропускается
-
-Это защищает runtime от повторного параллельного запуска одной и той же операции при быстром потоке событий.
-
-## Виды операций
-
-### `source`
-
-`source` не имеет входов и сам генерирует выходные данные.
-
-Примеры:
-- `webcam.read`
-- `microphone.read`
-- `microphone.capture`
-- `keyboard.read`
-
-Обычно запускается в `always_on` режиме: отдельная goroutine циклически вызывает `Run()`.
-
-### `transform`
-
-`transform` получает входы из `StreamStore` и создаёт новые значения.
-
-Примеры:
-- `cv.face_presence`
-- `cv.motion_presence`
-- `audio.voice_presence`
-- `audio.volume_presence`
-
-Обычно запускается в `task_per_event` режиме: при событии на одном из входных streams.
-
-### Selector-style transform
-
-Отдельного `kind: selector` больше не требуется. Такая логика моделируется
-как обычный `transform` с `mode: always_on`: runtime периодически читает
-последние значения входных streams из `StreamStore` и запускает оператор.
-
-Он полезен, когда:
-- нужно объединить несколько источников сигналов
-- нужна логика приоритетов
-- решение должно вычисляться периодически
-
-Примеры:
-- `selector.priority_failover`
-- `selector.audio_or_recent_key`
-- `selector.redundant_choice`
-
-### `sink`
-
-`sink` не производит outputs, а завершает цепочку.
-
-Примеры:
-- `output.console` — печатает последнее значение stream в лог
-- `frontend.web` — запускает HTTP-сервер (SSE) и стримит состояние pipeline
-  в браузер (camera, audio RMS, presence-индикатор)
-
-`sink` обычно срабатывает в `task_per_event` режиме и реагирует на каждое
-событие любого из своих входных streams. `frontend.web` использует это,
-чтобы на каждый apдейт рассылать свежий snapshot подписанным HTTP-клиентам.
-
-## Реальные реализации операций
-
-### `microphone.capture`
-
-Реальный `source`, который:
-- создаёт `malgo` context
-- перечисляет capture devices
-- по желанию выбирает устройство по `config.device_name_contains`
-- запускает устройство захвата
-- конвертирует входные байты в `AudioChunk`
-- считает `RMS`
-- публикует `audio_chunk`
-
-Поддерживаемые настройки:
-- `sample_rate`
-- `channels`
-- `frames_per_chunk`
-- `device_name_contains`
-
-Важно:
-- в sandbox среде доступ к аудио backend может не работать
-- для реальной работы лучше запускать в обычном терминале пользователя
-- на macOS разрешение «Микрофон» выдаётся **приложению-хосту**, которое
-  запустило процесс (Terminal.app, Cursor, Visual Studio Code, GoLand и т.д.),
-  а не бинарнику `runtime` отдельно. Встроенный терминал VS Code часто не
-  получает кадры с микрофона — используй конфигурацию
-  **LunaStreams runtime (external terminal)** из `.vscode/launch.json` или
-  запускай `go run ./cmd/runtime ...` из Terminal.app
-- для CI/автотестов без железа: `LUNASTREAMS_SKIP_MIC_WARMUP=1` отключает
-  ожидание первого непустого аудио-буфера при старте (для реального микрофона
-  не рекомендуется)
-
-### `keyboard.read`
-
-Реальный `source`, который читает символы из `os.Stdin`.
-
-Текущее поведение:
-- это не глобальный keyboard hook ОС
-- это чтение из stdin процесса runtime
-- сейчас ввод line-buffered, поэтому символы приходят после `Enter`
-- `Enter` сам игнорируется
-
-### `audio.volume_presence`
-
-Реальный `transform`, который:
-- получает `AudioChunk`
-- берёт его `RMS`
-- сравнивает с `config.threshold`
-- пишет `bool` stream
-
-### `selector.audio_or_recent_key`
-
-Реальный `selector`, который:
-- читает `audio_presence`
-- читает последнее `pressed_key`
-- проверяет, насколько недавно пришёл `KeyEvent`
-- возвращает `audio_presence || recent_key`
-
-Поддерживаемые настройки:
-- `audio_stream`
-- `key_stream`
-- `keyboard_window_ms`
-- `tick_ms`
-
-### `selector.redundant_choice`
-
-Selector для избыточного описания одного доменного факта. В новой схеме он описывает в `model` множество допустимых альтернативных сигналов, а planner до старта runtime сам выбирает execution plan на основе `task`.
-
-Поддерживаемые настройки в `model.operation.config`:
-- `default_choice`
-- `variants[]`
-- `tick_ms`
-
-Каждый элемент `variants[]` может описывать:
-- `kind: bool` для обычного булевого stream
-- `kind: recent_key` для проверки свежести последнего `KeyEvent`
-- `cost`, `weight` и `latency_ms`, если нужно переопределить профили producer-операции
-- `latency_ms`, если задача ограничивает суммарную задержку выбранного набора
-
-Если `cost`, `weight` и `latency_ms` не заданы внутри `variants[]`, planner/runtime сначала пытается взять их из `task.operation_profiles[]`, а затем уже из `operation.domain` producer-операции.
-
-Planner для требуемых `task.outputs`:
-- берёт из `model` все альтернативы selector'а
-- отбрасывает ветки, которым не хватает доступных `task.inputs`
-- строит кандидатные подграфы
-- оценивает их по `cost/weight/latency`
-- выбирает лучший план по `task.constraints` и `task.objective`
-- переписывает selector в already-selected режим и вырезает неиспользуемые ветки из документа перед `Build/NewEngine`
-
-Если выбранный или активный набор даёт решение, selector публикует:
-- `presence_decision = true`
-- строку стратегии вида `<labels> | cost=<sum> weight=<sum>`
-
-Если решение не сработало, selector публикует:
-- `presence_decision = false`
-- `default_choice`
-
-## Пример: redundant presence
-
-`examples/presence/` показывает, как вычислительная модель отделяется от постановки задачи для доменного факта `presence`. Модель — `examples/presence/model.yaml`, варианты задач — отдельные файлы `task_<id>.yaml` с корневым `task:`.
-
-### Логика графа
-
-- `microphone_source` через `microphone.capture` пишет в `audio_chunk`
-- два `audio.volume_presence` строят два альтернативных сигнала: `loud_audio_presence` и `soft_audio_presence`
-- `keyboard_source` через `keyboard.read` пишет в `pressed_key`
-- сама задача не перечисляет selector и не задаёт маршрут явно
-- задача отдельно задаёт:
-- доступные входы и требуемые выходы
-- профили операций (`cost/weight/latency_ms`)
-- ограничения (`min_total_weight`, `max_total_latency_ms`)
-- целевую функцию (`objective`)
-- planner до старта runtime сам выводит допустимые маршруты из `model` и выбирает лучший план
-- в этом примере planner оставляет `soft_audio_presence + pressed_key` и вырезает ветку `loud_audio_presence`
-- после компиляции selector работает только по выбранному плану и публикует:
-- `presence_decision`
-- `presence_strategy`
-
-### Что демонстрирует пример
-
-- один и тот же доменный факт `presence` описан несколькими избыточными способами
-- маршрут исполнения не задаётся в `task`, а выводится planner'ом из `model`
-- разные `task_variants` могут приводить к разным итоговым execution plan
-- система умеет выбрать избыточное описание предметной области до старта runtime, а не после вычисления всех дорогих веток
-- дорогая операция может вообще не попасть в execution plan, если более дешёвый набор операций даёт достаточный суммарный вес
-
-## Логирование
-
-Runtime использует `BeautifulLogger` с уровнями:
-- `INFO`
-- `DEBUG`
-- `ERROR`
-- `RESULT`
-
-`RESULT` используется для финальных значений в `sink`.
-
-Пример:
-
-```text
-23:57:05.370 | RESULT | sink       | presence_decision <= true
-```
-
-Для подробной трассировки можно включить debug:
-
-```bash
-go run ./cmd/runtime -ir ./examples/presence -task low_cost_interactive -debug
-```
+`task.outputs[]` — единый список целей:
+- `stream: <id>` — нужен выходной stream
+- `sink: <id>` — нужен конкретный sink
+
+Planner строит граф от `outputs`: оставляет только нужные операции, streams и sinks.
+
+## Runtime kinds
+
+`operation.runtime.kind` определяет, где исполняется операция:
+
+- `inproc_go` или пусто — Go factory из registry
+- `subprocess` — внешний процесс по NDJSON-протоколу
+- `docker` — заготовка под контейнер
+- `grpc` / `http` — заготовка под внешний сервис
+
+Для `subprocess` используются `ops/subprocess/driver.go` и polyglot-контракт из `docs/operation-interface.md`.
+
+## Пример `presence`
+
+`examples/presence/model.yaml` содержит:
+- микрофон и аудио presence в Go
+- клавиатуру в Go
+- камеру и face detection в Python subprocess
+- selector для выбора лучшего плана
+- console sinks и web frontend sink
+
+Варианты задач лежат рядом:
+- `task_audio_only_fast.yaml`
+- `task_low_cost_interactive.yaml`
+- `task_high_confidence_monitoring.yaml`
+- `task_keyboard_only_degraded.yaml`
+- `task_camera_vision_accurate.yaml`
+- `task_camera_plus_soft_audio.yaml`
+- `task_frontend_full.yaml`
 
 ## Запуск
 
-CLI принимает путь к директории примера через `-ir` и id постановки задачи через `-task`. Loader объединит `model.yaml` и все `task_*.yaml` (и любые другие `*.yaml` в каталоге) в один документ.
-
-### Redundant presence (low cost)
+Обычный запуск:
 
 ```bash
 go run ./cmd/runtime -ir ./examples/presence -task low_cost_interactive -debug
 ```
 
-Другой вариант постановки задачи:
+Другие варианты:
 
 ```bash
-go run ./cmd/runtime -ir ./examples/presence -task high_confidence_monitoring -debug
-```
-
-Если нужно зафиксировать конкретный микрофон:
-
-```yaml
-config:
-  device_name_contains: "MacBook"
-```
-
-### Camera + Python vision
-
-`camera_vision_accurate` прогоняет камеру через Python-операцию детекции
-лица (OpenCV Haar cascade):
-
-```bash
-pip install -r ops/subprocess/python/requirements.txt
+go run ./cmd/runtime -ir ./examples/presence -task audio_only_fast -debug
 go run ./cmd/runtime -ir ./examples/presence -task camera_vision_accurate -debug
+go run ./cmd/runtime -ir ./examples/presence -task frontend_full -debug
 ```
 
-### Web UI (frontend.web sink)
+## Python и `.venv`
 
-`frontend_full` поднимает простой HTTP-сервер и отдаёт в браузер камеру,
-audio RMS и индикатор presence. Это обычный sink (`impl: frontend.web`),
-который сам по себе слушает 127.0.0.1:8080 и стримит состояние через
-Server-Sent Events:
+Для camera/vision:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r ops/subprocess/python/requirements.txt
-go run ./cmd/runtime -ir ./examples/presence -task frontend_full -debug
-# далее открыть http://127.0.0.1:8080
 ```
 
-UI отображает:
-- последний `camera_frame` (JPEG, base64-encoded) из Python subprocess
-- RMS звука по последнему `audio_chunk` из Go microphone источника
-- булевый индикатор `presence_decision` и текст `presence_strategy` от selector'а
+Python subprocess-операции запускаются через `run_*.sh`, которые сначала ищут `.venv/bin/python`, затем fallback на `python3`.
 
-Frontend sink умеет работать и в урезанных task-вариантах: planner автоматически
-дропает из его inputs стримы, которые не вошли в выбранный план (например,
-если task не запрашивает камеру, sink останется, но без `camera_frame`).
+## macOS: микрофон и камера
 
-Go runtime запускает `ops/subprocess/python/camera_capture.py` и
-`ops/subprocess/python/face_presence.py` как долгоживущие subprocess-ы и
-общается с ними по protocol-у из `docs/operation-interface.md`. Никакого
-C-binding для камеры в Go не требуется — любая реализация сводится к
-добавлению скрипта/бинаря и записи `runtime.kind` + `runtime.command`
-в IR.
+На macOS доступ выдаётся приложению, которое запустило процесс: `Terminal.app`, `Visual Studio Code`, `GoLand`.
 
-## Точка входа
+Если нет аудио или камера не открывается:
+- выдай права в `System Settings -> Privacy & Security -> Microphone / Camera`
+- запускай runtime из внешнего терминала
 
-`cmd/runtime/main.go`:
-- читает путь к IR через `-ir`
-- при необходимости выбирает `task` через `-task`
-- создаёт logger
-- регистрирует все операции
-- выполняет `Load -> Validate -> CompileRedundantChoices -> Validate -> Build -> NewEngine -> Start`
-- ждёт `Ctrl+C`
+## Диаграммы
 
-## Ограничения текущего MVP
+Presence-диаграммы генерируются из текущего IR:
 
-- `StreamStore` хранит только последнее значение stream, без истории
-- `task_per_event` операции имеют `max_in_flight=1`
-- `keyboard.read` пока требует `Enter`
-- типы streams описаны логически, но не enforced на уровне generic-типов
-- selector запускается по ticker, а не напрямую по событию
+```bash
+make graphs-mmd
+make graphs-validate
+make graphs
+```
 
-## Что читать дальше
+Что делает:
+- `make graphs-mmd` — обновляет `examples/presence/graphs/*.mmd`
+- `make graphs-validate` — проверяет Mermaid-схемы
+- `make graphs` — валидирует и рендерит `svg/png` для `docs/diagrams` и `examples/presence/graphs`
 
-- общее устройство компонентов: `docs/runtime-components.md`
-- пример выбора между избыточными вариантами: `examples/presence/` (`model.yaml` + `task_*.yaml`)
-- polyglot-контракт операций: `docs/operation-interface.md`
-- entrypoint runtime: `cmd/runtime/main.go`
+## Где смотреть дальше
+
+- `docs/runtime-components.md` — устройство runtime
+- `docs/operation-interface.md` — контракт subprocess-операций
+- `examples/presence/` — основной пример
