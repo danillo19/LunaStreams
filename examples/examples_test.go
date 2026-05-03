@@ -125,7 +125,7 @@ func TestPresenceCameraVisionTaskRoutesThroughPythonFaceOp(t *testing.T) {
 	}
 }
 
-func TestPresenceFrontendTaskKeepsCameraAudioAndWebSink(t *testing.T) {
+func TestPresenceFrontendTaskKeepsOnlyAvailableInputsAndWebSink(t *testing.T) {
 	registry := rt.NewRegistry()
 	if err := ops.RegisterAll(registry); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
@@ -153,9 +153,14 @@ func TestPresenceFrontendTaskKeepsCameraAudioAndWebSink(t *testing.T) {
 		t.Fatalf("Validate(planned) error = %v", err)
 	}
 
-	for _, id := range []string{"camera_source", "microphone_source", "face_presence", "frontend_sink"} {
+	for _, id := range []string{"microphone_source", "soft_audio_presence", "frontend_sink", "runtime_simulator_sink"} {
 		if !hasOperation(doc, id) {
 			t.Fatalf("planned document for frontend_full missing %q", id)
+		}
+	}
+	for _, id := range []string{"camera_source", "face_presence"} {
+		if hasOperation(doc, id) {
+			t.Fatalf("frontend_full must not keep unavailable camera operation %q", id)
 		}
 	}
 	// frontend_full не объявляет console-sinks в task.outputs[].sink,
@@ -171,10 +176,13 @@ func TestPresenceFrontendTaskKeepsCameraAudioAndWebSink(t *testing.T) {
 	for _, input := range sink.Inputs {
 		streams[input.Stream] = struct{}{}
 	}
-	for _, expected := range []string{"camera_frame", "audio_chunk", "presence_decision", "presence_strategy"} {
+	for _, expected := range []string{"audio_chunk", "presence_decision", "presence_strategy"} {
 		if _, ok := streams[expected]; !ok {
 			t.Fatalf("frontend_sink lost expected input %q; got %v", expected, streams)
 		}
+	}
+	if _, ok := streams["camera_frame"]; ok {
+		t.Fatalf("frontend_sink must not keep unavailable camera_frame input; got %v", streams)
 	}
 }
 

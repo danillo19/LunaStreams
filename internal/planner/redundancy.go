@@ -113,8 +113,14 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 			selectedInputs := make([]ir.StreamRef, 0, len(variants))
 			selectedRawVariants := make([]any, 0, len(variants))
 			for _, variant := range variants {
+				if !variantAvailable(variant, context.availableInputs) {
+					continue
+				}
 				selectedInputs = append(selectedInputs, ir.StreamRef{Stream: variant.stream})
 				selectedRawVariants = append(selectedRawVariants, variant.raw)
+			}
+			if len(selectedInputs) == 0 {
+				return nil, fmt.Errorf("selector %q has no runtime_failover variants compatible with task inputs", op.ID)
 			}
 			config := cloneMap(op.Config)
 			config["selection_mode"] = SelectionModeRuntimeFailover
@@ -179,7 +185,7 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 		})
 	}
 
-	pruned := pruneToRequiredSubgraph(cloned, outputStreams, outputSinks)
+	pruned := pruneToRequiredSubgraph(cloned, outputStreams, outputSinks, context.availableInputs)
 	return &PlanResult{
 		Document:  pruned,
 		Decisions: decisions,
@@ -398,7 +404,7 @@ func parsePlannedVariants(op ir.Operation, producerByStream map[string]string, o
 // Если task.outputs пуст целиком — это совместимость со старыми yaml:
 // ведём себя как раньше (стартуем BFS от inputs всех sink-ов) и keep-
 // правило для sink-ов становится "хотя бы один input в плане".
-func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string, requiredSinks []string) *ir.Document {
+func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string, requiredSinks []string, availableInputs map[string]struct{}) *ir.Document {
 	if doc == nil {
 		return nil
 	}
@@ -438,6 +444,9 @@ func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string, r
 			continue
 		}
 		for _, input := range op.Inputs {
+			if !streamAvailableForTask(doc, input.Stream, availableInputs) {
+				continue
+			}
 			if _, seen := requiredStreams[input.Stream]; seen {
 				continue
 			}
@@ -533,6 +542,22 @@ func pruneToRequiredSubgraph(doc *ir.Document, requiredOutputStreams []string, r
 	}
 
 	return pruned
+}
+
+func streamAvailableForTask(doc *ir.Document, streamID string, availableInputs map[string]struct{}) bool {
+	if len(availableInputs) == 0 {
+		return true
+	}
+	_, sourceInputs := collectVariantClosure(doc, streamID)
+	if len(sourceInputs) == 0 {
+		return true
+	}
+	for _, sourceInput := range sourceInputs {
+		if _, exists := availableInputs[sourceInput]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func filterSinkInputs(op ir.Operation, keepStreams map[string]struct{}) ir.Operation {

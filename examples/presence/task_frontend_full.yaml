@@ -42,7 +42,7 @@ task:
         min_face_px: 80
         # Demo failover: через 8 секунд vision-ветка начнет падать,
         # selector переключится на soft_audio degraded plan.
-        simulate_failure_after_ms: 8000
+        simulate_failure_after_ms: 4000
     - operation: presence_choice_selector
       config:
         selection_mode: runtime_failover
@@ -64,6 +64,10 @@ task:
         audio_stream: audio_chunk
         presence_stream: presence_decision
         strategy_stream: presence_strategy
+    - operation: runtime_simulator_sink
+      config:
+        bind: 127.0.0.1
+        port: 8090
   constraints:
     min_total_weight: 0.95
     max_total_latency_ms: 80

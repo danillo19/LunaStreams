@@ -29,8 +29,10 @@ var frontendIndexHTML []byte
 //     {camera, audio, presence, strategy}.
 //
 // Сервер поднимается один раз при создании оператора и живёт до Close().
-// Run() вызывается движком на каждое событие любого из входных streams —
-// на этот момент sink публикует актуальный snapshot всем подписчикам SSE.
+// Run() вызывается движком на каждое событие любого из объявленных IR
+// inputs (шина не триггерит sink по optional preview, например camera).
+// Движок подмешивает в inputs последний кадр камеры из store по config
+// camera_stream при каждом запуске — см. Engine.loadInputs.
 //
 // Такая реализация специально сделана без внешних зависимостей, чтобы
 // показать, что frontend — это обычная polyglot-операция: её легко
@@ -158,13 +160,13 @@ func (s *frontendSink) broadcast(snap snapshot) error {
 func (s *frontendSink) buildSnapshot(inputs map[string]any) snapshot {
 	out := snapshot{}
 
-	if value, ok := inputs[s.cameraStream]; ok {
+	if value, ok := inputs[s.cameraStream]; ok && isFreshInput(inputs, s.cameraStream) {
 		if frame := decodeCameraFrame(value); frame != nil {
 			out.Camera = frame
 		}
 	}
 
-	if value, ok := inputs[s.audioStream]; ok {
+	if value, ok := inputs[s.audioStream]; ok && isFreshInput(inputs, s.audioStream) {
 		if audio := audioChunkToSnapshot(value); audio != nil {
 			out.Audio = audio
 		}
@@ -326,4 +328,16 @@ func asInt(value any) (int, bool) {
 		return int(n), err == nil
 	}
 	return 0, false
+}
+
+func isFreshInput(inputs map[string]any, streamID string) bool {
+	value, ok := inputs["__fresh:"+streamID]
+	if !ok {
+		return true
+	}
+	fresh, ok := value.(bool)
+	if !ok {
+		return true
+	}
+	return fresh
 }

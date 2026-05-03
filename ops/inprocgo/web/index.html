@@ -224,6 +224,11 @@
         } else {
           cameraAge.textContent = "age -";
         }
+      } else {
+        cameraEl.removeAttribute("src");
+        cameraSize.textContent = "-";
+        cameraSeq.textContent = "seq -";
+        cameraAge.textContent = "age -";
       }
 
       if (snapshot.audio) {
@@ -232,6 +237,10 @@
         audioFill.style.width = `${normalized * 100}%`;
         audioRms.textContent = rms != null ? `rms ${rms.toFixed(4)}` : "rms -";
         audioSeq.textContent = seq != null ? `seq ${seq}` : "seq -";
+      } else {
+        audioFill.style.width = "0%";
+        audioRms.textContent = "rms -";
+        audioSeq.textContent = "seq -";
       }
 
       if (snapshot.presence != null) {
