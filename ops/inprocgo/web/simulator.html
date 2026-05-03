@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LunaStreams - runtime simulator</title>
+  <style>
+    :root {
+      --bg: #0e1014;
+      --panel: #181b22;
+      --fg: #e6e8ef;
+      --muted: #7a7f8c;
+      --line: #303642;
+      --defined: #66a6ff;
+      --start: #e5c07b;
+      --success: #4cc38a;
+      --publish: #c678dd;
+      --plan: #56b6c2;
+      --error: #e06c75;
+      --idle: #3b4252;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid #23262d;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 500; }
+    header .tag {
+      background: var(--idle);
+      color: var(--muted);
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(740px, 1fr) 340px;
+      gap: 16px;
+      padding: 16px 24px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid #23262d;
+      border-radius: 12px;
+      padding: 16px;
+      min-width: 0;
+    }
+    .panel h2 {
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 12px 0;
+      font-weight: 500;
+    }
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .buttons {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    button {
+      color: var(--fg);
+      background: #202632;
+      border: 1px solid #303642;
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--defined); }
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .graph-wrap {
+      position: relative;
+      height: 690px;
+      overflow: hidden;
+      border-radius: 10px;
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+        radial-gradient(circle at top left, rgba(102, 166, 255, 0.12), transparent 36%),
+        linear-gradient(180deg, #12151c, #101219);
+      background-size: 28px 28px, 28px 28px, auto, auto;
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+    }
+    .graph-wrap.dragging { cursor: grabbing; }
+    #graph {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .graph-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 13px;
+      pointer-events: none;
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 2;
+      fill: none;
+      opacity: 0.78;
+      marker-end: url(#arrow);
+      transition: stroke 0.2s ease, stroke-width 0.2s ease, opacity 0.2s ease;
+    }
+    .edge.active {
+      stroke-width: 4;
+      opacity: 1;
+      filter: drop-shadow(0 0 7px currentColor);
+    }
+    .edge.operation_start { stroke: var(--start); }
+    .edge.operation_success { stroke: var(--success); }
+    .edge.operation_error { stroke: var(--error); }
+    .edge.stream_publish { stroke: var(--publish); }
+    .edge.plan_replan { stroke: var(--plan); }
+    .edge.active-plan {
+      stroke: var(--plan);
+      stroke-width: 3.5;
+      opacity: 0.95;
+    }
+    .node {
+      filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.25));
+      transition: opacity 0.2s ease;
+    }
+    .node rect, .node circle {
+      stroke: #4a5160;
+      stroke-width: 1.5;
+      fill: #202632;
+      transition: fill 0.2s ease, stroke 0.2s ease;
+    }
+    .node.channel rect { fill: #1b2330; }
+    .node.channel.active-plan rect {
+      fill: #18343a;
+      stroke: var(--plan);
+      stroke-width: 2.5;
+    }
+    .node.defined rect, .node.defined circle {
+      fill: #1b2d45;
+      stroke: var(--defined);
+    }
+    .node.running rect, .node.running circle {
+      fill: #4a3d22;
+      stroke: var(--start);
+    }
+    .node.success rect, .node.success circle {
+      fill: #1e4632;
+      stroke: var(--success);
+    }
+    .node.published rect, .node.published circle {
+      fill: #372647;
+      stroke: var(--publish);
+    }
+    .node.error rect, .node.error circle {
+      fill: #4a2328;
+      stroke: var(--error);
+    }
+    .node.plan rect, .node.plan circle {
+      fill: #18343a;
+      stroke: var(--plan);
+    }
+    .node.stale { opacity: 0.42; }
+    .node text {
+      fill: var(--fg);
+      font-size: 12px;
+      pointer-events: none;
+    }
+    .node .meta {
+      fill: var(--muted);
+      font-size: 10px;
+    }
+    .token {
+      opacity: 0;
+      filter: drop-shadow(0 0 9px currentColor);
+    }
+    .token.fly { animation: fly 0.85s ease-out; }
+    @keyframes fly {
+      0% { opacity: 0; r: 2; }
+      15% { opacity: 1; r: 6; }
+      100% { opacity: 0; r: 2; }
+    }
+    .runtime-meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .legend {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--idle);
+    }
+    .swatch.defined { background: var(--defined); }
+    .swatch.start { background: var(--start); }
+    .swatch.success { background: var(--success); }
+    .swatch.publish { background: var(--publish); }
+    .swatch.plan { background: var(--plan); }
+    .swatch.error { background: var(--error); }
+    .event-log {
+      display: grid;
+      gap: 6px;
+      max-height: 560px;
+      overflow: auto;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .event-line {
+      padding: 7px 8px;
+      border-radius: 8px;
+      background: #12151c;
+      border: 1px solid #242936;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .event-line.operation_defined { border-color: var(--defined); }
+    .event-line.operation_start { border-color: var(--start); color: var(--start); }
+    .event-line.operation_success { border-color: var(--success); color: var(--success); }
+    .event-line.stream_publish { border-color: var(--publish); color: var(--publish); }
+    .event-line.plan_replan { border-color: var(--plan); color: var(--plan); }
+    .event-line.operation_health { border-color: var(--error); color: var(--error); }
+    .event-line.operation_error { border-color: var(--error); color: var(--error); }
+    .story {
+      margin-bottom: 14px;
+      padding: 12px;
+      border-radius: 10px;
+      background: #12151c;
+      border: 1px solid #263241;
+    }
+    .story-title {
+      font-size: 13px;
+      color: var(--fg);
+      margin-bottom: 6px;
+    }
+    .story-value {
+      color: var(--plan);
+      font-size: 12px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .story-log {
+      display: grid;
+      gap: 6px;
+      margin: 10px 0 14px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .story-step {
+      border-left: 3px solid var(--plan);
+      padding: 6px 8px;
+      background: #12151c;
+      border-radius: 6px;
+    }
+    .story-step.error { border-left-color: var(--error); color: var(--error); }
+    .event-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+    footer {
+      padding: 12px 24px;
+      color: var(--muted);
+      font-size: 12px;
+      border-top: 1px solid #23262d;
+    }
+    .pill {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: var(--idle);
+      color: var(--muted);
+    }
+    .pill.live { background: #1e4632; color: var(--success); }
+    .pill.warn { background: #443d28; color: var(--start); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LunaStreams - runtime simulator</h1>
+    <span class="tag">generic runtime graph</span>
+    <span id="status" class="pill">connecting...</span>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="toolbar">
+        <h2>Runtime Graph</h2>
+        <div class="buttons">
+          <button id="zoom-in" type="button">Zoom +</button>
+          <button id="zoom-out" type="button">Zoom -</button>
+          <button id="fit" type="button">Fit</button>
+          <button id="reset" type="button">Reset</button>
+        </div>
+      </div>
+      <div class="hint">Drag to pan, scroll to zoom. Nodes are laid out by dependency layers.</div>
+      <div id="graph-wrap" class="graph-wrap">
+        <svg id="graph" viewBox="0 0 1000 690" role="img" aria-label="runtime event graph">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#545b6a"></path>
+            </marker>
+          </defs>
+          <g id="viewport"></g>
+        </svg>
+        <div id="graph-empty" class="graph-empty">waiting for runtime topology...</div>
+      </div>
+      <div class="runtime-meta">
+        <span id="runtime-events">events 0</span>
+        <span id="runtime-active">active operators 0</span>
+        <span id="runtime-stale">stale streams 0</span>
+        <span id="zoom-label">zoom 100%</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Scenario</h2>
+      <div class="story">
+        <div class="story-title">Active plan</div>
+        <div id="current-plan" class="story-value">waiting for selector decision...</div>
+      </div>
+      <div id="story-log" class="story-log"></div>
+      <h2>Legend</h2>
+      <div class="legend">
+        <div class="legend-item"><span class="swatch defined"></span>defined</div>
+        <div class="legend-item"><span class="swatch start"></span>operation start</div>
+        <div class="legend-item"><span class="swatch success"></span>operation success</div>
+        <div class="legend-item"><span class="swatch publish"></span>stream publish</div>
+        <div class="legend-item"><span class="swatch plan"></span>plan switch</div>
+        <div class="legend-item"><span class="swatch error"></span>operation error</div>
+        <div class="legend-item"><span class="swatch"></span>idle/stale</div>
+      </div>
+      <h2>Events</h2>
+      <label class="event-toggle">
+        <input id="show-all-events" type="checkbox" />
+        show all live events
+      </label>
+      <div id="event-log" class="event-log"></div>
+    </section>
+  </main>
+
+  <footer>
+    This view is task-agnostic and consumes only runtime telemetry from <code>runtime.simulator</code>.
+  </footer>
+
+  <script>
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    const staleAfterMs = 2500;
+    const activeEdgeMs = 900;
+    const nodeW = 210;
+    const nodeH = 74;
+    const channelW = 150;
+    const channelH = 34;
+    const rankGap = 320;
+    const rowGap = 120;
+
+    const statusEl = document.getElementById("status");
+    const graphWrap = document.getElementById("graph-wrap");
+    const graphEl = document.getElementById("graph");
+    const viewport = document.getElementById("viewport");
+    const graphEmpty = document.getElementById("graph-empty");
+    const eventLog = document.getElementById("event-log");
+    const storyLog = document.getElementById("story-log");
+    const currentPlan = document.getElementById("current-plan");
+    const showAllEvents = document.getElementById("show-all-events");
+    const runtimeEvents = document.getElementById("runtime-events");
+    const runtimeActive = document.getElementById("runtime-active");
+    const runtimeStale = document.getElementById("runtime-stale");
+    const zoomLabel = document.getElementById("zoom-label");
+
+    const camera = { x: 70, y: 70, scale: 1 };
+    const drag = { active: false, x: 0, y: 0 };
+
+    const graph = {
+      operations: new Map(),
+      streams: new Map(),
+      edges: new Map(),
+      positions: new Map(),
+      eventCount: 0,
+      activePlanStreams: new Set(),
+      bounds: { width: 1000, height: 690 },
+    };
+
+    function connect() {
+      const source = new EventSource("/events");
+      source.addEventListener("open", () => {
+        statusEl.textContent = "live";
+        statusEl.className = "pill live";
+      });
+      source.addEventListener("error", () => {
+        statusEl.textContent = "reconnecting...";
+        statusEl.className = "pill warn";
+      });
+      source.addEventListener("message", (ev) => {
+        try {
+          applyRuntimeEvent(JSON.parse(ev.data));
+        } catch (err) {
+          console.error("bad event", err, ev.data);
+        }
+      });
+    }
+
+    function applyRuntimeEvent(event) {
+      graph.eventCount++;
+      if (event.type === "operation_defined") defineOperation(event);
+      if (event.type === "operation_start") markOperation(event.operation, "running", event.at_unix_ms, event.type);
+      if (event.type === "operation_success") markOperation(event.operation, "success", event.at_unix_ms, event.type);
+      if (event.type === "operation_error") markOperation(event.operation, "error", event.at_unix_ms, event.type);
+      if (event.type === "operation_health") markHealth(event);
+      if (event.type === "plan_replan") markPlan(event);
+      if (event.type === "stream_publish") markStream(event);
+      appendLog(event);
+      renderGraph();
+    }
+
+    function defineOperation(event) {
+      if (!event.operation) return;
+      const existing = graph.operations.get(event.operation) || {};
+      graph.operations.set(event.operation, {
+        ...existing,
+        id: event.operation,
+        kind: event.kind || "operation",
+        mode: event.mode || "",
+        impl: event.impl || "",
+        inputs: event.inputs || existing.inputs || [],
+        outputs: event.outputs || existing.outputs || [],
+        state: existing.state || "defined",
+        eventType: "operation_defined",
+        lastAt: event.at_unix_ms || Date.now(),
+      });
+
+      for (const stream of event.inputs || []) {
+        ensureStream(stream);
+        ensureEdge(streamKey(stream), opKey(event.operation), stream, event.operation);
+      }
+      for (const stream of event.outputs || []) {
+        ensureStream(stream);
+        ensureEdge(opKey(event.operation), streamKey(stream), event.operation, stream);
+      }
+    }
+
+    function ensureStream(id) {
+      if (!id || graph.streams.has(id)) return;
+      graph.streams.set(id, { id, seq: 0, lastAt: 0, state: "idle", eventType: "" });
+    }
+
+    function ensureEdge(from, to, fromLabel, toLabel) {
+      const key = `${from}->${to}`;
+      if (!graph.edges.has(key)) {
+        graph.edges.set(key, { from, to, fromLabel, toLabel, activeUntil: 0, eventType: "" });
+      }
+    }
+
+    function markOperation(id, state, at, eventType) {
+      const op = graph.operations.get(id);
+      if (!op) return;
+      op.state = state;
+      op.eventType = eventType;
+      op.lastAt = at || Date.now();
+      if (state !== "error") {
+        setTimeout(() => {
+          const current = graph.operations.get(id);
+          if (current && current.state === state) {
+            current.state = "idle";
+            renderGraph();
+          }
+        }, 650);
+      }
+    }
+
+    function markStream(event) {
+      ensureStream(event.stream);
+      const stream = graph.streams.get(event.stream);
+      stream.seq = event.seq || stream.seq;
+      stream.lastAt = event.at_unix_ms || Date.now();
+      stream.state = "published";
+      stream.eventType = "stream_publish";
+      const edge = graph.edges.get(`${opKey(event.operation)}->${streamKey(event.stream)}`);
+      if (edge) {
+        edge.activeUntil = Date.now() + activeEdgeMs;
+        edge.eventType = "stream_publish";
+      }
+      flyToken(opKey(event.operation), streamKey(event.stream), "stream_publish");
+      setTimeout(() => {
+        const current = graph.streams.get(event.stream);
+        if (current && current.state === "published") {
+          current.state = "idle";
+          renderGraph();
+        }
+      }, 650);
+    }
+
+    function markHealth(event) {
+      const op = graph.operations.get(event.operation);
+      if (!op) return;
+      op.health = event.status || "";
+      op.state = event.status === "unavailable" ? "error" : "defined";
+      op.lastAt = event.at_unix_ms || Date.now();
+      appendStory(event);
+    }
+
+    function markPlan(event) {
+      const op = graph.operations.get(event.operation);
+      if (!op) return;
+      op.state = event.status === "normal" ? "success" : "plan";
+      op.plan = `${event.status || "plan"}: ${event.strategy || event.message || ""}`;
+      op.lastAt = event.at_unix_ms || Date.now();
+      graph.activePlanStreams = new Set(event.outputs || []);
+      for (const stream of graph.streams.values()) {
+        stream.activePlan = graph.activePlanStreams.has(stream.id);
+      }
+      currentPlan.textContent = `${event.status || "plan"} / ${event.strategy || event.message || ""}`;
+      appendStory(event);
+    }
+
+    function renderGraph() {
+      const now = Date.now();
+      graphEmpty.style.display = graph.operations.size ? "none" : "grid";
+      viewport.textContent = "";
+      layoutGraph();
+      applyCamera();
+
+      const edgeLayer = createSvg("g", {});
+      const tokenLayer = createSvg("g", { id: "token-layer" });
+      viewport.appendChild(edgeLayer);
+
+      for (const [key, edge] of graph.edges) {
+        const a = graph.positions.get(edge.from);
+        const b = graph.positions.get(edge.to);
+        if (!a || !b) continue;
+        edgeLayer.appendChild(createSvg("path", {
+          id: `edge-${cssID(key)}`,
+          class: edgeClass(edge, now),
+          d: curvePath(a.x, a.y, b.x, b.y),
+        }));
+      }
+
+      for (const op of graph.operations.values()) renderOperation(op, now);
+      for (const stream of graph.streams.values()) renderStream(stream, now);
+      viewport.appendChild(tokenLayer);
+
+      let active = 0;
+      for (const op of graph.operations.values()) {
+        if (now - (op.lastAt || 0) < staleAfterMs) active++;
+      }
+      let stale = 0;
+      for (const stream of graph.streams.values()) {
+        if (stream.lastAt && now - stream.lastAt > staleAfterMs) stale++;
+      }
+      runtimeEvents.textContent = `events ${graph.eventCount}`;
+      runtimeActive.textContent = `active operators ${active}`;
+      runtimeStale.textContent = `stale streams ${stale}`;
+      zoomLabel.textContent = `zoom ${Math.round(camera.scale * 100)}%`;
+    }
+
+    function layoutGraph() {
+      const ranks = assignOperationRanks();
+      const grouped = new Map();
+      for (const op of graph.operations.values()) {
+        const rank = ranks.get(op.id) || 0;
+        if (!grouped.has(rank)) grouped.set(rank, []);
+        grouped.get(rank).push(op);
+      }
+
+      let maxRows = 1;
+      const rankList = [...grouped.keys()].sort((a, b) => a - b);
+      for (const rank of rankList) {
+        const items = grouped.get(rank).sort(compareOperations);
+        maxRows = Math.max(maxRows, items.length);
+        items.forEach((op, index) => {
+          graph.positions.set(opKey(op.id), {
+            x: 120 + rank * rankGap,
+            y: 85 + index * rowGap,
+          });
+        });
+      }
+
+      layoutChannels(ranks);
+
+      let maxX = 1000;
+      let maxY = 690;
+      for (const pos of graph.positions.values()) {
+        maxX = Math.max(maxX, pos.x + 180);
+        maxY = Math.max(maxY, pos.y + 120);
+      }
+      graph.bounds = {
+        width: maxX,
+        height: Math.max(maxY, 170 + (maxRows - 1) * rowGap),
+      };
+      graphEl.setAttribute("viewBox", `0 0 ${graphWrap.clientWidth || 1000} ${graphWrap.clientHeight || 690}`);
+    }
+
+    function assignOperationRanks() {
+      const producerByStream = new Map();
+      for (const op of graph.operations.values()) {
+        for (const stream of op.outputs || []) producerByStream.set(stream, op.id);
+      }
+
+      const indegree = new Map();
+      const outgoing = new Map();
+      const ranks = new Map();
+      for (const op of graph.operations.values()) {
+        indegree.set(op.id, 0);
+        outgoing.set(op.id, []);
+        ranks.set(op.id, op.kind === "sink" ? 2 : op.kind === "transform" ? 1 : 0);
+      }
+
+      for (const op of graph.operations.values()) {
+        for (const input of op.inputs || []) {
+          const producer = producerByStream.get(input);
+          if (!producer || producer === op.id || !outgoing.has(producer)) continue;
+          outgoing.get(producer).push(op.id);
+          indegree.set(op.id, (indegree.get(op.id) || 0) + 1);
+        }
+      }
+
+      const queue = [...graph.operations.values()]
+        .filter((op) => (indegree.get(op.id) || 0) === 0)
+        .sort(compareOperations)
+        .map((op) => op.id);
+      const seen = new Set();
+      while (queue.length) {
+        const opID = queue.shift();
+        seen.add(opID);
+        for (const next of outgoing.get(opID) || []) {
+          ranks.set(next, Math.max(ranks.get(next) || 0, (ranks.get(opID) || 0) + 1));
+          indegree.set(next, (indegree.get(next) || 0) - 1);
+          if (indegree.get(next) === 0) queue.push(next);
+        }
+      }
+
+      for (const op of graph.operations.values()) {
+        if (!seen.has(op.id)) ranks.set(op.id, ranks.get(op.id) || 0);
+      }
+      return ranks;
+    }
+
+    function layoutChannels(opRanks) {
+      const channelsByX = new Map();
+      for (const stream of graph.streams.values()) {
+        const producer = producerForStream(stream.id);
+        const consumers = consumersForStream(stream.id);
+        const producerPos = producer ? graph.positions.get(opKey(producer)) : null;
+        const consumerPositions = consumers
+          .map((opID) => graph.positions.get(opKey(opID)))
+          .filter(Boolean);
+
+        const rank = producer ? (opRanks.get(producer) || 0) : Math.max(0, ...consumers.map((opID) => opRanks.get(opID) || 1)) - 1;
+        const x = producerPos && consumerPositions.length
+          ? (producerPos.x + Math.min(...consumerPositions.map((pos) => pos.x))) / 2
+          : producerPos
+            ? producerPos.x + rankGap / 2
+            : 120 + (rank + 0.5) * rankGap;
+        const endpoints = [producerPos, ...consumerPositions].filter(Boolean);
+        const y = endpoints.length
+          ? endpoints.reduce((sum, pos) => sum + pos.y, 0) / endpoints.length
+          : 85;
+
+        const key = Math.round(x / 20) * 20;
+        if (!channelsByX.has(key)) channelsByX.set(key, []);
+        channelsByX.get(key).push({ stream, x, y });
+      }
+
+      for (const channels of channelsByX.values()) {
+        channels.sort((a, b) => a.y - b.y || a.stream.id.localeCompare(b.stream.id));
+        let previousY = -Infinity;
+        for (const channel of channels) {
+          const y = Math.max(channel.y, previousY + 48);
+          graph.positions.set(streamKey(channel.stream.id), { x: channel.x, y });
+          previousY = y;
+        }
+      }
+    }
+
+    function producerForStream(streamID) {
+      for (const op of graph.operations.values()) {
+        if ((op.outputs || []).includes(streamID)) return op.id;
+      }
+      return "";
+    }
+
+    function consumersForStream(streamID) {
+      const consumers = [];
+      for (const op of graph.operations.values()) {
+        if ((op.inputs || []).includes(streamID)) consumers.push(op.id);
+      }
+      return consumers;
+    }
+
+    function compareOperations(a, b) {
+      const order = { source: 0, transform: 1, sink: 2 };
+      const ak = order[a.kind] ?? 1;
+      const bk = order[b.kind] ?? 1;
+      if (ak !== bk) return ak - bk;
+      return a.id.localeCompare(b.id);
+    }
+
+    function renderOperation(op, now) {
+      const pos = graph.positions.get(opKey(op.id));
+      if (!pos) return;
+      const stale = now - (op.lastAt || 0) > staleAfterMs;
+      const state = stale ? "stale" : op.state;
+      const group = createSvg("g", { class: `node op ${state}` });
+      group.appendChild(createSvg("rect", { x: pos.x - nodeW / 2, y: pos.y - nodeH / 2, width: nodeW, height: nodeH, rx: 12 }));
+      group.appendChild(createSvg("text", { x: pos.x, y: pos.y - 12, "text-anchor": "middle" }, short(op.id, 24)));
+      group.appendChild(createSvg("text", { x: pos.x, y: pos.y + 7, "text-anchor": "middle", class: "meta" }, `${op.kind} / ${op.mode || "-"} / ${op.health || "healthy"}`));
+      if (op.plan) {
+        group.appendChild(createSvg("text", { x: pos.x, y: pos.y + 25, "text-anchor": "middle", class: "meta" }, short(op.plan, 28)));
+      }
+      viewport.appendChild(group);
+    }
+
+    function renderStream(stream, now) {
+      const pos = graph.positions.get(streamKey(stream.id));
+      if (!pos) return;
+      const stale = stream.lastAt && now - stream.lastAt > staleAfterMs;
+      const state = stale ? "stale" : stream.state;
+      const group = createSvg("g", { class: `node channel ${state} ${stream.activePlan ? "active-plan" : ""}` });
+      group.appendChild(createSvg("rect", { x: pos.x - channelW / 2, y: pos.y - channelH / 2, width: channelW, height: channelH, rx: 17 }));
+      group.appendChild(createSvg("text", { x: pos.x, y: pos.y + 4, "text-anchor": "middle" }, short(stream.id, 18)));
+      group.appendChild(createSvg("text", { x: pos.x, y: pos.y + 34, "text-anchor": "middle", class: "meta" }, stream.seq ? `channel event seq ${stream.seq}` : "channel idle"));
+      viewport.appendChild(group);
+    }
+
+    function flyToken(fromKey, toKey, eventType) {
+      requestAnimationFrame(() => {
+        const tokenLayer = document.getElementById("token-layer");
+        const a = graph.positions.get(fromKey);
+        const b = graph.positions.get(toKey);
+        if (!tokenLayer || !a || !b) return;
+        const token = createSvg("circle", { class: "token fly", cx: a.x, cy: a.y, r: 4, fill: eventColor(eventType) });
+        tokenLayer.appendChild(token);
+        token.animate([{ transform: "translate(0px, 0px)" }, { transform: `translate(${b.x - a.x}px, ${b.y - a.y}px)` }], {
+          duration: 850,
+          easing: "ease-out",
+        });
+        setTimeout(() => token.remove(), 900);
+      });
+    }
+
+    function appendLog(event) {
+      if (!showAllEvents.checked && !importantEvent(event)) return;
+      const line = document.createElement("div");
+      line.className = `event-line ${event.type}`;
+      const target = event.stream ? `${event.operation || "-"} -> ${event.stream}` : event.operation || "-";
+      line.textContent = `${event.type}: ${target}${event.seq ? ` #${event.seq}` : ""}`;
+      eventLog.prepend(line);
+      while (eventLog.children.length > 60) eventLog.lastChild.remove();
+    }
+
+    function appendStory(event) {
+      const line = document.createElement("div");
+      line.className = `story-step ${event.status === "critical" || event.status === "unavailable" ? "error" : ""}`;
+      line.textContent = storyText(event);
+      storyLog.prepend(line);
+      while (storyLog.children.length > 5) storyLog.lastChild.remove();
+    }
+
+    function importantEvent(event) {
+      return event.type === "plan_replan" || event.type === "operation_health" || event.type === "operation_error";
+    }
+
+    function storyText(event) {
+      if (event.type === "plan_replan") {
+        return `plan -> ${event.status}: ${event.strategy || event.message || "-"} (weight=${formatMetric(event.weight)}, cost=${formatMetric(event.cost)})`;
+      }
+      if (event.type === "operation_health") {
+        return `${event.operation} health -> ${event.status}`;
+      }
+      return `${event.type}: ${event.operation || event.stream || "-"}`;
+    }
+
+    function formatMetric(value) {
+      return value == null ? "-" : Number(value).toFixed(2);
+    }
+
+    function edgeClass(edge, now) {
+      const classes = ["edge"];
+      if (edge.activeUntil > now) classes.push("active", edge.eventType);
+      if (edgeTouchesActivePlan(edge)) classes.push("active-plan");
+      return classes.join(" ");
+    }
+
+    function edgeTouchesActivePlan(edge) {
+      for (const streamID of graph.activePlanStreams) {
+        const key = streamKey(streamID);
+        if (edge.from === key || edge.to === key) return true;
+      }
+      return false;
+    }
+
+    function setZoom(nextScale, screenX, screenY) {
+      const oldScale = camera.scale;
+      const scale = Math.min(2.8, Math.max(0.25, nextScale));
+      if (scale === oldScale) return;
+      const rect = graphWrap.getBoundingClientRect();
+      const px = screenX == null ? rect.width / 2 : screenX - rect.left;
+      const py = screenY == null ? rect.height / 2 : screenY - rect.top;
+      const wx = (px - camera.x) / oldScale;
+      const wy = (py - camera.y) / oldScale;
+      camera.scale = scale;
+      camera.x = px - wx * scale;
+      camera.y = py - wy * scale;
+      applyCamera();
+    }
+
+    function fitGraph() {
+      const rect = graphWrap.getBoundingClientRect();
+      const scaleX = (rect.width - 80) / graph.bounds.width;
+      const scaleY = (rect.height - 80) / graph.bounds.height;
+      camera.scale = Math.min(1.4, Math.max(0.25, Math.min(scaleX, scaleY)));
+      camera.x = 40;
+      camera.y = 40;
+      applyCamera();
+    }
+
+    function resetCamera() {
+      camera.x = 70;
+      camera.y = 70;
+      camera.scale = 1;
+      applyCamera();
+    }
+
+    function applyCamera() {
+      viewport.setAttribute("transform", `translate(${camera.x} ${camera.y}) scale(${camera.scale})`);
+      zoomLabel.textContent = `zoom ${Math.round(camera.scale * 100)}%`;
+    }
+
+    function installInteractions() {
+      graphWrap.addEventListener("wheel", (ev) => {
+        ev.preventDefault();
+        const factor = ev.deltaY < 0 ? 1.12 : 0.89;
+        setZoom(camera.scale * factor, ev.clientX, ev.clientY);
+      }, { passive: false });
+
+      graphWrap.addEventListener("pointerdown", (ev) => {
+        drag.active = true;
+        drag.x = ev.clientX;
+        drag.y = ev.clientY;
+        graphWrap.setPointerCapture(ev.pointerId);
+        graphWrap.classList.add("dragging");
+      });
+      graphWrap.addEventListener("pointermove", (ev) => {
+        if (!drag.active) return;
+        camera.x += ev.clientX - drag.x;
+        camera.y += ev.clientY - drag.y;
+        drag.x = ev.clientX;
+        drag.y = ev.clientY;
+        applyCamera();
+      });
+      graphWrap.addEventListener("pointerup", endDrag);
+      graphWrap.addEventListener("pointercancel", endDrag);
+
+      document.getElementById("zoom-in").addEventListener("click", () => setZoom(camera.scale * 1.2));
+      document.getElementById("zoom-out").addEventListener("click", () => setZoom(camera.scale / 1.2));
+      document.getElementById("fit").addEventListener("click", fitGraph);
+      document.getElementById("reset").addEventListener("click", resetCamera);
+    }
+
+    function endDrag(ev) {
+      drag.active = false;
+      graphWrap.classList.remove("dragging");
+      if (ev && graphWrap.hasPointerCapture(ev.pointerId)) graphWrap.releasePointerCapture(ev.pointerId);
+    }
+
+    function createSvg(name, attrs, text) {
+      const el = document.createElementNS(SVG_NS, name);
+      for (const [key, value] of Object.entries(attrs || {})) el.setAttribute(key, value);
+      if (text != null) el.textContent = text;
+      return el;
+    }
+
+    function curvePath(x1, y1, x2, y2) {
+      const dx = Math.max(50, Math.abs(x2 - x1) / 2);
+      return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+    }
+
+    function eventColor(type) {
+      return {
+        operation_defined: "var(--defined)",
+        operation_start: "var(--start)",
+        operation_success: "var(--success)",
+        stream_publish: "var(--publish)",
+        plan_replan: "var(--plan)",
+        operation_error: "var(--error)",
+        operation_health: "var(--error)",
+      }[type] || "var(--success)";
+    }
+
+    function opKey(id) { return `op:${id}`; }
+    function streamKey(id) { return `stream:${id}`; }
+    function cssID(value) { return String(value).replace(/[^a-zA-Z0-9_-]/g, "_"); }
+    function short(value, limit) {
+      return value && value.length > limit ? value.slice(0, limit - 1) + "..." : value || "-";
+    }
+
+    installInteractions();
+    setInterval(renderGraph, 1000);
+    connect();
+  </script>
+</body>
+</html>

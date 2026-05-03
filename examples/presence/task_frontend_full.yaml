@@ -1,7 +1,6 @@
 # Веб-интерфейс: микрофон + камера + presence. task.outputs описывают
-# только нужные domain-streams и целевой sink. Источники
-# camera_frame/audio_chunk подтягиваются автоматически через inputs
-# frontend_sink (opt-in по sink-записи в outputs).
+# нужные domain-streams и целевые sinks. Presence frontend и generic
+# runtime simulator подключаются отдельно.
 task:
   id: frontend_full
   inputs:
@@ -11,6 +10,7 @@ task:
     - stream: presence_decision
     - stream: presence_strategy
     - sink: frontend_sink
+    - sink: runtime_simulator_sink
 
   operation_profiles:
     - operation: soft_audio_presence
@@ -40,10 +40,15 @@ task:
         scale_factor: 1.2
         min_neighbors: 5
         min_face_px: 80
+        # Demo failover: через 8 секунд vision-ветка начнет падать,
+        # selector переключится на soft_audio degraded plan.
+        simulate_failure_after_ms: 8000
     - operation: presence_choice_selector
       config:
+        selection_mode: runtime_failover
         default_choice: plan_inactive
         tick_ms: 100
+        freshness_ms: 1500
         variants:
           - stream: soft_audio_presence
             kind: bool

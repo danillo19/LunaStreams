@@ -108,6 +108,14 @@ model:
         - stream: presence_decision
         - stream: presence_strategy
 
+    # --- Runtime simulator: generic HTTP/SSE view of engine telemetry ----
+    # Не зависит от presence payloads: этот sink можно добавить в любую
+    # задачу, чтобы увидеть live-граф операторов и stream-событий.
+    - id: runtime_simulator_sink
+      kind: sink
+      mode: task_per_event
+      impl: runtime.simulator
+
   streams:
     - id: audio_chunk
       type: audio_chunk

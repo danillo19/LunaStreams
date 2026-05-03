@@ -303,6 +303,7 @@ type audioOrRecentKeySelector struct {
 }
 
 type redundantChoiceSelector struct {
+	opID                  string
 	mode                  string
 	decisionOutput        string
 	choiceOutput          string
@@ -311,6 +312,9 @@ type redundantChoiceSelector struct {
 	selectionWeightTarget float64
 	maxTotalLatencyMS     int
 	variants              []choiceVariant
+	lastStrategy          string
+	lastStatus            string
+	mu                    sync.Mutex
 }
 
 type choiceVariant struct {
@@ -322,9 +326,11 @@ type choiceVariant struct {
 	weight    float64
 	latencyMS int
 	index     int
+	producer  string
 }
 
 type selectedChoice struct {
+	variants  []choiceVariant
 	labels    []string
 	cost      float64
 	weight    float64
@@ -414,6 +420,7 @@ func newRedundantChoiceSelector(spec ir.Operation) (rt.Operator, error) {
 	}
 
 	return &redundantChoiceSelector{
+		opID:                  spec.ID,
 		mode:                  stringConfig(spec.Config, "selection_mode", "runtime_bundle"),
 		decisionOutput:        decisionOutput,
 		choiceOutput:          choiceOutput,
@@ -429,6 +436,8 @@ func (o *redundantChoiceSelector) Run(_ context.Context, inputs map[string]any) 
 	switch o.mode {
 	case "selected_any":
 		return o.runSelectedAny(inputs), nil
+	case "runtime_failover":
+		return o.runRuntimeFailover(inputs), nil
 	default:
 		return o.runRuntimeBundle(inputs), nil
 	}
@@ -476,6 +485,68 @@ func (o *redundantChoiceSelector) runRuntimeBundle(inputs map[string]any) map[st
 		o.decisionOutput: true,
 		o.choiceOutput:   best.describe(),
 	}
+}
+
+func (o *redundantChoiceSelector) runRuntimeFailover(inputs map[string]any) map[string]any {
+	available := make([]choiceVariant, 0, len(o.variants))
+	for _, variant := range o.variants {
+		if variant.available(inputs) {
+			available = append(available, variant)
+		}
+	}
+
+	best, ok := chooseWeightedVariantSet(available, o.selectionWeightTarget, o.maxTotalLatencyMS)
+	status := "normal"
+	if !ok {
+		var degradedOK bool
+		best, degradedOK = chooseBestAvailableVariantSet(available, o.maxTotalLatencyMS)
+		ok = degradedOK
+		status = "degraded"
+	}
+	if !ok {
+		o.publishPlanIfChanged("critical", o.defaultChoice, selectedChoice{})
+		return map[string]any{
+			o.decisionOutput: false,
+			o.choiceOutput:   o.defaultChoice,
+		}
+	}
+
+	decision := false
+	for _, variant := range best.variants {
+		if variant.matches(inputs) {
+			decision = true
+			break
+		}
+	}
+
+	strategy := best.describe()
+	o.publishPlanIfChanged(status, strategy, best)
+	return map[string]any{
+		o.decisionOutput: decision,
+		o.choiceOutput:   strategy,
+	}
+}
+
+func (o *redundantChoiceSelector) publishPlanIfChanged(status string, strategy string, choice selectedChoice) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.lastStatus == status && o.lastStrategy == strategy {
+		return
+	}
+	o.lastStatus = status
+	o.lastStrategy = strategy
+
+	rt.PublishRuntimeEvent(rt.RuntimeEvent{
+		Type:      "plan_replan",
+		Operation: o.opID,
+		Status:    status,
+		Strategy:  strategy,
+		Cost:      choice.cost,
+		Weight:    choice.weight,
+		Outputs:   choice.streamIDs(),
+		Message:   fmt.Sprintf("runtime plan switched to %s", strategy),
+	})
 }
 
 type keyboardSource struct {
@@ -716,6 +787,7 @@ func parseChoiceVariants(spec ir.Operation) ([]choiceVariant, error) {
 			weight:    positiveFloatConfig(entry, "weight", 1.0),
 			latencyMS: nonNegativeIntConfig(entry, "latency_ms", 0),
 			index:     index,
+			producer:  stringConfig(entry, "producer_operation", ""),
 		}
 
 		switch variant.kind {
@@ -734,6 +806,21 @@ func parseChoiceVariants(spec ir.Operation) ([]choiceVariant, error) {
 	}
 
 	return variants, nil
+}
+
+func (v choiceVariant) available(inputs map[string]any) bool {
+	if v.producer != "" {
+		status, _ := inputs["__health:"+v.producer].(string)
+		if status == rt.OperationHealthUnavailable {
+			return false
+		}
+	}
+	fresh, ok := inputs["__fresh:"+v.stream].(bool)
+	if ok && !fresh {
+		return false
+	}
+	_, present := inputs[v.stream]
+	return present
 }
 
 func (v choiceVariant) matches(inputs map[string]any) bool {
@@ -769,6 +856,7 @@ func chooseWeightedVariantSet(active []choiceVariant, threshold float64, maxLate
 			}
 
 			candidate.labels = append(candidate.labels, variant.label)
+			candidate.variants = append(candidate.variants, variant)
 			candidate.cost += variant.cost
 			candidate.weight += variant.weight
 			candidate.latencyMS += variant.latencyMS
@@ -789,6 +877,34 @@ func chooseWeightedVariantSet(active []choiceVariant, threshold float64, maxLate
 		}
 	}
 
+	return best, bestFound
+}
+
+func chooseBestAvailableVariantSet(available []choiceVariant, maxLatencyMS int) (selectedChoice, bool) {
+	if len(available) == 0 {
+		return selectedChoice{}, false
+	}
+
+	var best selectedChoice
+	bestFound := false
+	for _, variant := range available {
+		if maxLatencyMS > 0 && variant.latencyMS > maxLatencyMS {
+			continue
+		}
+		candidate := selectedChoice{
+			variants:  []choiceVariant{variant},
+			labels:    []string{variant.label},
+			cost:      variant.cost,
+			weight:    variant.weight,
+			latencyMS: variant.latencyMS,
+			count:     1,
+			order:     []int{variant.index},
+		}
+		if !bestFound || candidate.degradedBetterThan(best) {
+			best = candidate
+			bestFound = true
+		}
+	}
 	return best, bestFound
 }
 
@@ -813,6 +929,30 @@ func (c selectedChoice) betterThan(other selectedChoice) bool {
 	}
 
 	return len(c.order) < len(other.order)
+}
+
+func (c selectedChoice) degradedBetterThan(other selectedChoice) bool {
+	if c.weight != other.weight {
+		return c.weight > other.weight
+	}
+	if c.cost != other.cost {
+		return c.cost < other.cost
+	}
+	if c.latencyMS != other.latencyMS {
+		return c.latencyMS < other.latencyMS
+	}
+	return c.order[0] < other.order[0]
+}
+
+func (c selectedChoice) streamIDs() []string {
+	if len(c.variants) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(c.variants))
+	for _, variant := range c.variants {
+		result = append(result, variant.stream)
+	}
+	return result
 }
 
 func (c selectedChoice) describe() string {

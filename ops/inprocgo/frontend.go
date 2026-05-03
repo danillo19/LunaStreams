@@ -122,16 +122,27 @@ func (s *frontendSink) Run(_ context.Context, inputs map[string]any) (map[string
 	snap := s.buildSnapshot(inputs)
 	s.mu.Lock()
 	s.latest = snap
+	s.mu.Unlock()
+
+	if err := s.broadcast(snap); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (s *frontendSink) broadcast(snap snapshot) error {
+	payload, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("marshal snapshot: %w", err)
+	}
+
+	s.mu.RLock()
 	clients := make([]chan []byte, 0, len(s.clients))
 	for ch := range s.clients {
 		clients = append(clients, ch)
 	}
-	s.mu.Unlock()
-
-	payload, err := json.Marshal(snap)
-	if err != nil {
-		return nil, fmt.Errorf("marshal snapshot: %w", err)
-	}
+	s.mu.RUnlock()
 
 	for _, ch := range clients {
 		select {
@@ -141,7 +152,7 @@ func (s *frontendSink) Run(_ context.Context, inputs map[string]any) (map[string
 		}
 	}
 
-	return nil, nil
+	return nil
 }
 
 func (s *frontendSink) buildSnapshot(inputs map[string]any) snapshot {

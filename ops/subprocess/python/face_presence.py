@@ -17,6 +17,7 @@ Config:
   * scale_factor     — cv2 scaleFactor (default 1.2);
   * min_neighbors    — cv2 minNeighbors (default 5);
   * min_face_px      — минимальный размер лица в пикселях (default 60).
+  * simulate_failure_after_ms — demo-only: начать возвращать ошибку после N ms.
 
 Зависимости: `pip install opencv-python numpy`.
 """
@@ -26,6 +27,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
+import time
 from typing import Any
 
 try:
@@ -95,6 +97,7 @@ def find_frame_input(request: dict[str, Any]) -> dict[str, Any] | None:
 def main() -> int:
     cascade: cv2.CascadeClassifier | None = None
     cached_config: dict[str, Any] = {}
+    config_started_at = time.monotonic()
 
     for raw_line in sys.stdin:
         raw_line = raw_line.strip()
@@ -113,11 +116,22 @@ def main() -> int:
             try:
                 cascade = load_cascade(config)
                 cached_config = config
+                config_started_at = time.monotonic()
             except Exception as exc:  # noqa: BLE001
                 json.dump({"outputs": {}, "error": str(exc)}, sys.stdout)
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 continue
+
+        fail_after_ms = int(config.get("simulate_failure_after_ms") or 0)
+        if fail_after_ms > 0 and (time.monotonic() - config_started_at) * 1000 >= fail_after_ms:
+            json.dump(
+                {"outputs": {}, "error": f"simulated face_presence failure after {fail_after_ms}ms"},
+                sys.stdout,
+            )
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            continue
 
         outputs_binding = request.get("outputs") or []
         output_stream = outputs_binding[0]["stream_id"] if outputs_binding else "face_presence"

@@ -41,6 +41,7 @@ func Register(registry *rt.Registry) error {
 		{impl: "selector.priority_failover", factory: newPrioritySelector},
 		{impl: "output.console", factory: newConsoleSink},
 		{impl: "frontend.web", factory: newFrontendSink},
+		{impl: "runtime.simulator", factory: newRuntimeSimulatorSink},
 	}
 
 	for _, registration := range registrations {

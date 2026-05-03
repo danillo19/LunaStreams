@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	SelectionModeSelectedAny         = "selected_any"
-	defaultWeightThreshold   float64 = 1.0
+	SelectionModeSelectedAny             = "selected_any"
+	SelectionModeRuntimeFailover         = "runtime_failover"
+	defaultWeightThreshold       float64 = 1.0
 )
 
 type PlanResult struct {
@@ -103,6 +104,29 @@ func CompileRedundantChoices(doc *ir.Document) (*PlanResult, error) {
 			variant := &variants[variantIndex]
 			variant.producerID = producerByStream[variant.stream]
 			variant.operationIDs, variant.sourceInputs = collectVariantClosure(cloned, variant.stream)
+			if variant.producerID != "" {
+				variant.raw["producer_operation"] = variant.producerID
+			}
+		}
+
+		if stringConfig(op.Config, "selection_mode", "") == SelectionModeRuntimeFailover {
+			selectedInputs := make([]ir.StreamRef, 0, len(variants))
+			selectedRawVariants := make([]any, 0, len(variants))
+			for _, variant := range variants {
+				selectedInputs = append(selectedInputs, ir.StreamRef{Stream: variant.stream})
+				selectedRawVariants = append(selectedRawVariants, variant.raw)
+			}
+			config := cloneMap(op.Config)
+			config["selection_mode"] = SelectionModeRuntimeFailover
+			config["selection_weight_threshold"] = context.minWeight
+			if context.maxLatencyMS > 0 {
+				config["max_total_latency_ms"] = context.maxLatencyMS
+			}
+			config["variants"] = selectedRawVariants
+			op.Inputs = selectedInputs
+			op.Config = config
+			cloned.Operations[index] = op
+			continue
 		}
 
 		choice, ok := choosePlannedChoice(variants, operationsByID, operationProfiles, context, op.Config)

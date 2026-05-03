@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>LunaStreams · presence</title>
+  <title>LunaStreams - presence</title>
   <style>
     :root {
       --bg: #0e1014;
@@ -140,9 +140,9 @@
 </head>
 <body>
   <header>
-    <h1>LunaStreams · presence monitor</h1>
+    <h1>LunaStreams - presence monitor</h1>
     <span class="tag">camera + audio + presence</span>
-    <span id="status" class="pill">connecting…</span>
+    <span id="status" class="pill">connecting...</span>
   </header>
 
   <main>
@@ -150,9 +150,9 @@
       <h2>Camera</h2>
       <img id="camera" class="camera-frame" alt="no frame yet" />
       <div class="camera-meta">
-        <span id="camera-size">—</span>
-        <span id="camera-seq">seq —</span>
-        <span id="camera-age">age —</span>
+        <span id="camera-size">-</span>
+        <span id="camera-seq">seq -</span>
+        <span id="camera-age">age -</span>
       </div>
     </section>
 
@@ -162,20 +162,20 @@
         <div class="presence-dot"></div>
         <div class="presence-state" id="presence-state">unknown</div>
       </div>
-      <div class="presence-strategy" id="presence-strategy">strategy: —</div>
+      <div class="presence-strategy" id="presence-strategy">strategy: -</div>
 
       <h2 style="margin-top: 20px;">Audio (RMS)</h2>
       <div class="audio-meter"><div id="audio-fill" class="audio-fill"></div></div>
       <div class="audio-meta">
-        <span id="audio-rms">rms —</span>
-        <span id="audio-seq">seq —</span>
+        <span id="audio-rms">rms -</span>
+        <span id="audio-seq">seq -</span>
       </div>
     </section>
   </main>
 
   <footer>
-    live updates via SSE at <code>/events</code>. static page served by
-    <code>frontend.web</code> sink operator.
+    Domain updates via SSE at <code>/events</code>. Generic runtime graph is served separately by
+    <code>runtime.simulator</code>.
   </footer>
 
   <script>
@@ -198,13 +198,12 @@
         statusEl.classList.add("live");
       });
       source.addEventListener("error", () => {
-        statusEl.textContent = "reconnecting…";
+        statusEl.textContent = "reconnecting...";
         statusEl.classList.remove("live");
       });
       source.addEventListener("message", (ev) => {
         try {
-          const data = JSON.parse(ev.data);
-          applyUpdate(data);
+          applyUpdate(JSON.parse(ev.data));
         } catch (err) {
           console.error("bad event", err, ev.data);
         }
@@ -217,13 +216,13 @@
         if (jpeg_base64) {
           cameraEl.src = "data:image/jpeg;base64," + jpeg_base64;
         }
-        cameraSize.textContent = width && height ? `${width}×${height}` : "—";
-        cameraSeq.textContent = seq != null ? `seq ${seq}` : "seq —";
+        cameraSize.textContent = width && height ? `${width}x${height}` : "-";
+        cameraSeq.textContent = seq != null ? `seq ${seq}` : "seq -";
         if (captured_unix_ms) {
           const age = Date.now() - captured_unix_ms;
-          cameraAge.textContent = age >= 0 ? `age ${age}ms` : "age —";
+          cameraAge.textContent = age >= 0 ? `age ${age}ms` : "age -";
         } else {
-          cameraAge.textContent = "age —";
+          cameraAge.textContent = "age -";
         }
       }
 
@@ -231,8 +230,8 @@
         const { rms, seq } = snapshot.audio;
         const normalized = Math.min(1, Math.max(0, rms || 0));
         audioFill.style.width = `${normalized * 100}%`;
-        audioRms.textContent = rms != null ? `rms ${rms.toFixed(4)}` : "rms —";
-        audioSeq.textContent = seq != null ? `seq ${seq}` : "seq —";
+        audioRms.textContent = rms != null ? `rms ${rms.toFixed(4)}` : "rms -";
+        audioSeq.textContent = seq != null ? `seq ${seq}` : "seq -";
       }
 
       if (snapshot.presence != null) {
@@ -243,7 +242,7 @@
       }
 
       if (snapshot.strategy != null) {
-        presenceStrategy.textContent = `strategy: ${snapshot.strategy || "—"}`;
+        presenceStrategy.textContent = `strategy: ${snapshot.strategy || "-"}`;
       }
     }
 
